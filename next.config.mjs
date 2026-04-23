@@ -18,8 +18,8 @@ const nextConfig = {
     ];
   },
   /**
-   * Dev reliability: polling + ignored paths so edits reliably trigger rebuilds
-   * (fixes common macOS EMFILE / native watcher gaps). Fast Refresh is built into Next.
+   * Webpack dev only (`npm run dev:webpack`). `npm run dev` uses Turbopack (`--turbo`), which does not run this hook.
+   * Polling + ignored paths help macOS / VM file watching when not using Turbopack.
    */
   webpack: (config, { dev }) => {
     if (dev) {

@@ -5,6 +5,7 @@ import {
   calculateTaxForRegime,
   compareTaxRegimes,
 } from "./calculateTax";
+import { computeHraExemption } from "./hraExemption";
 
 const emptyOldDeductions = {
   deduction80C: 0,
@@ -31,6 +32,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "new",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -54,6 +56,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "old",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -73,6 +76,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "new",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -92,6 +96,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "new",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -113,6 +118,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "new",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -128,6 +134,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "old",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -144,6 +151,7 @@ describe("calculateTaxForRegime", () => {
       ageGroup: "below60",
       regime: "new",
       pluxeeExemption: 0,
+      hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
     });
 
@@ -173,5 +181,49 @@ describe("compareTaxRegimes", () => {
     expect(a.oldRegime.totalTax).toBe(b.oldRegime.totalTax);
     expect(a.newRegime.totalTax).toBe(b.newRegime.totalTax);
     expect(["old", "new"]).toContain(a.bestRegime);
+  });
+});
+
+describe("computeHraExemption", () => {
+  it("uses rent paid in excess of 10% of salary when that is the binding limit (non-metro)", () => {
+    const exempt = computeHraExemption({
+      annualRentPaid: 100_000,
+      annualHraReceived: 200_000,
+      salaryForHra: 400_000,
+      isMetro: false,
+    });
+    expect(exempt).toBe(60_000);
+  });
+
+  it("uses 50% of salary cap in metro when rent excess and HRA are higher", () => {
+    const exempt = computeHraExemption({
+      annualRentPaid: 500_000,
+      annualHraReceived: 400_000,
+      salaryForHra: 600_000,
+      isMetro: true,
+    });
+    expect(exempt).toBe(300_000);
+  });
+});
+
+describe("calculateTaxForRegime HRA", () => {
+  it("reduces old-regime taxable income by HRA exemption only for old regime", () => {
+    const base = {
+      fixedPay: 1_000_000,
+      variablePay: 0,
+      employerPf: 0,
+      professionalTax: 0,
+      ageGroup: "below60" as const,
+      pluxeeExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+    };
+    const without = calculateTaxForRegime({ ...base, regime: "old", hraExemption: 0 });
+    const withHra = calculateTaxForRegime({ ...base, regime: "old", hraExemption: 100_000 });
+    const newWithHra = calculateTaxForRegime({ ...base, regime: "new", hraExemption: 100_000 });
+
+    expect(withHra.hraExemption).toBe(100_000);
+    expect(withHra.taxableIncome).toBe(without.taxableIncome - 100_000);
+    expect(newWithHra.hraExemption).toBe(0);
+    expect(newWithHra.taxableIncome).toBeGreaterThan(withHra.taxableIncome);
   });
 });

@@ -14,8 +14,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Income Tax Calculator India FY 2024-25",
-  description: "Calculate and compare income tax under the old and new regime for FY 2024-25.",
+  title: "Salary & Income Tax Calculator (FY 2024-25) — India",
+  description: "Compare old vs new regime, flexi exemptions, and take-home for FY 2024-25.",
 };
 
 export default function RootLayout({
@@ -24,8 +24,8 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${fraunces.variable} ${manrope.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${fraunces.variable} ${manrope.variable}`} suppressHydrationWarning>
+      <body className="min-h-screen antialiased" suppressHydrationWarning>
         {children}
       </body>
     </html>

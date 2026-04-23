@@ -1,5 +1,3 @@
-import WebpackBar from "webpackbar";
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
@@ -23,19 +21,13 @@ const nextConfig = {
    * Dev reliability: polling + ignored paths so edits reliably trigger rebuilds
    * (fixes common macOS EMFILE / native watcher gaps). Fast Refresh is built into Next.
    */
-  webpack: (config, { dev, isServer }) => {
+  webpack: (config, { dev }) => {
     if (dev) {
       config.watchOptions = {
         poll: 1000,
         aggregateTimeout: 200,
         ignored: ["**/node_modules/**", "**/.git/**", "**/.next/**"],
       };
-      config.plugins.push(
-        new WebpackBar({
-          name: isServer ? "server" : "client",
-          color: isServer ? "#0d9488" : "#7c3aed",
-        }),
-      );
     }
     return config;
   },

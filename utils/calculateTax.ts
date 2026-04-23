@@ -61,6 +61,8 @@ export interface TaxComputation {
   rebateMarginalRelief: number;
   surcharge: number;
   surchargeMarginalRelief: number;
+  /** Income tax + surcharge, before 4% health & education cess (Form 16 “tax on income” line). */
+  incomeTaxBeforeCess: number;
   cess: number;
   totalTax: number;
   monthlyNetInHand: number;
@@ -101,6 +103,7 @@ interface PreCessTaxResult {
   totalBeforeCess: number;
 }
 
+/** FY 2024-25 (AY 2025-26): old regime ₹50k; new regime ₹75k (Finance (No. 2) Act, 2024). */
 export const OLD_STANDARD_DEDUCTION = 50_000;
 export const NEW_STANDARD_DEDUCTION = 75_000;
 export const MAX_GROSS_INCOME = 100_000_000;
@@ -137,6 +140,7 @@ const OLD_REGIME_SLABS: Record<AgeGroup, TaxSlab[]> = {
   ],
 };
 
+/** Section 115BAC slabs as amended by Finance Act 2024 (FY 2024-25 / AY 2025-26): 3–7L @ 5%, 7–10L @ 10%, etc. */
 const NEW_REGIME_SLABS: TaxSlab[] = [
   { lowerLimit: 0, upperLimit: 300_000, rate: 0, label: "Up to Rs 3L" },
   { lowerLimit: 300_000, upperLimit: 700_000, rate: 0.05, label: "Rs 3L - Rs 7L" },
@@ -339,10 +343,9 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     pluxeeExemption;
   const taxableIncome = Math.max(0, totalCtc - totalExemptions);
   const taxBeforeCess = computePreCessTax(input.regime, input.ageGroup, taxableIncome);
-  const cess = roundCurrency(
-    (taxBeforeCess.totalBeforeCess * HEALTH_EDUCATION_CESS_RATE),
-  );
-  const totalTax = roundCurrency(taxBeforeCess.totalBeforeCess + cess);
+  const incomeTaxBeforeCess = roundCurrency(taxBeforeCess.totalBeforeCess);
+  const cess = roundCurrency(incomeTaxBeforeCess * HEALTH_EDUCATION_CESS_RATE);
+  const totalTax = roundCurrency(incomeTaxBeforeCess + cess);
   const breakdown = calculateBreakdown(taxableIncome, getSlabsForRegime(input.regime, input.ageGroup));
   const monthlyNetInHand = Math.max(0, totalCtc - totalTax) / 12;
   const effectiveTaxRate = totalCtc > 0 ? (totalTax / totalCtc) * 100 : 0;
@@ -363,6 +366,7 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     rebateMarginalRelief: taxBeforeCess.rebateMarginalRelief,
     surcharge: taxBeforeCess.surcharge,
     surchargeMarginalRelief: taxBeforeCess.surchargeMarginalRelief,
+    incomeTaxBeforeCess,
     cess,
     totalTax,
     monthlyNetInHand: roundCurrency(monthlyNetInHand),

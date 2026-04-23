@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Fraunces, Manrope } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 
 const fraunces = Fraunces({
@@ -26,6 +27,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${fraunces.variable} ${manrope.variable}`} suppressHydrationWarning>
       <body className="min-h-screen antialiased" suppressHydrationWarning>
+        <Script id="itax-theme-init" strategy="beforeInteractive">
+          {`(function(){try{var k='itax-theme';var t=localStorage.getItem(k);var d=document.documentElement;if(t==='dark')d.classList.add('dark');else d.classList.remove('dark');}catch(e){}})();`}
+        </Script>
         {children}
       </body>
     </html>

@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, ReactNode, useMemo, useState } from "react";
 import {
   AgeGroup,
   MAX_80C_DEDUCTION,
@@ -19,6 +19,9 @@ import {
   TaxRegime,
   compareTaxRegimes,
 } from "../utils/calculateTax";
+import { computeHraExemption } from "../utils/hraExemption";
+import { buildMonthlyCashflow, FY_MONTH_LABELS } from "../utils/monthlyCashflow";
+import { ThemeToggle } from "./components/theme-toggle";
 type SalaryField = "fixedPay" | "variablePay" | "employerPf" | "professionalTax";
 type PayrollField = "employeePfAnnual" | "otherPayrollAnnual" | "lwfEmployeeAnnual";
 type DeductionField =
@@ -42,9 +45,13 @@ type BenefitKey =
   | "books"
   | "driver";
 
+type VariablePayMode = "amount" | "percent";
+
 interface SalaryState {
   fixedPay: string;
   variablePay: string;
+  variablePayMode: VariablePayMode;
+  variableMonthSelected: boolean[];
   employerPf: string;
   professionalTax: string;
   employeePfAnnual: string;
@@ -56,6 +63,11 @@ interface SalaryState {
   advancedOpen: boolean;
   deductionsOpen: boolean;
   flexiOpen: boolean;
+  hraRentAnnual: string;
+  hraReceivedAnnual: string;
+  /** When false, annual HRA received for the formula tracks 25% of fixed pay until the user edits the field. */
+  hraReceivedManual: boolean;
+  hraIsMetro: boolean;
   deductions: Record<DeductionField, string>;
   benefits: Record<BenefitKey, string>;
 }
@@ -83,24 +95,29 @@ interface MonthlyRow {
   month: string;
   gross: number;
   tax: number;
-  net: number;
+  netAfterTax: number;
   highlight: boolean;
 }
 
-type ValidationErrors = Partial<Record<SalaryField | DeductionField | BenefitKey | PayrollField, string>>;
+type ValidationErrors = Partial<
+  Record<SalaryField | DeductionField | BenefitKey | PayrollField | "variableMonths", string>
+>;
 
-const DIRECTOR_MIN_CTC = 8_000_000;
 const MAX_PAYROLL_LINE_ANNUAL = MAX_GROSS_INCOME;
-const MONTHS = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
 
 /** Typical EPF employee + employer share at ₹1,800/month each (annualised for inputs). */
 const DEFAULT_EPF_MONTHLY = 1_800;
 const DEFAULT_EPF_ANNUAL = DEFAULT_EPF_MONTHLY * 12;
 const DEFAULT_EPF_ANNUAL_STRING = String(DEFAULT_EPF_ANNUAL);
 
+/** When the user has not overridden HRA received, assume this share of annual fixed pay (typical Basic proxy). */
+const HRA_RECEIVED_DEFAULT_OF_FIXED = 0.25;
+
 const defaultState: SalaryState = {
   fixedPay: "1000000",
   variablePay: "0",
+  variablePayMode: "amount",
+  variableMonthSelected: FY_MONTH_LABELS.map(() => false),
   employerPf: DEFAULT_EPF_ANNUAL_STRING,
   professionalTax: "0",
   employeePfAnnual: DEFAULT_EPF_ANNUAL_STRING,
@@ -112,6 +129,10 @@ const defaultState: SalaryState = {
   advancedOpen: false,
   deductionsOpen: false,
   flexiOpen: false,
+  hraRentAnnual: "0",
+  hraReceivedAnnual: "0",
+  hraReceivedManual: false,
+  hraIsMetro: true,
   deductions: {
     deduction80C: "0",
     deduction80CCD1B: "0",
@@ -213,35 +234,27 @@ const numericValue = (value: string) => {
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-const getBenefitCap = (benefit: BenefitConfig, regime: TaxRegime, isDirectorEligible: boolean) => {
-  if (benefit.directorOnly && !isDirectorEligible) {
+const getBenefitCap = (benefit: BenefitConfig, regime: TaxRegime, driverBenefitOptIn: boolean) => {
+  if (benefit.directorOnly && !driverBenefitOptIn) {
     return 0;
   }
   return regime === "old" ? benefit.oldAnnualMax : benefit.newAnnualMax;
 };
 
-const buildMonthlySchedule = (totalCtc: number, variablePay: number, totalTax: number) => {
-  const fixedMonthly = Math.max(0, totalCtc - variablePay) / 12;
-  const variableHalf = variablePay / 2;
-
-  return MONTHS.map<MonthlyRow>((month) => {
-    const highlight = month === "Sep" || month === "Mar";
-    const gross = fixedMonthly + (highlight ? variableHalf : 0);
-    const tax = totalCtc > 0 ? (gross / totalCtc) * totalTax : 0;
-
-    return {
-      month: highlight ? `${month} · variable` : month,
-      gross,
-      tax,
-      net: Math.max(0, gross - tax),
-      highlight,
-    };
-  });
+const deriveVariablePayAnnual = (fixedPay: number, rawInput: number, mode: VariablePayMode) => {
+  if (mode === "amount") {
+    return clamp(rawInput, 0, MAX_GROSS_INCOME);
+  }
+  const pct = clamp(rawInput, 0, 100);
+  const fromPercent = Math.round(fixedPay * (pct / 100));
+  return clamp(fromPercent, 0, Math.max(0, MAX_GROSS_INCOME - fixedPay));
 };
 
 function SectionCard({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`surface-card elevate-hover rounded-[1.5rem] border p-5 sm:p-6 ${className}`}>
+    <div
+      className={`surface-card elevate-hover rounded-[1.5rem] border border-[color:var(--line)] p-5 sm:p-6 ${className}`}
+    >
       {children}
     </div>
   );
@@ -264,46 +277,61 @@ function InputField({
 }) {
   return (
     <label className="block space-y-2">
-      <span className={`text-sm font-medium ${disabled ? "text-slate-400" : "text-[color:var(--navy)]"}`}>
-        {label}
-      </span>
+      {label ? (
+        <span
+          className={`text-sm font-medium ${disabled ? "text-slate-400 dark:text-slate-500" : "text-[color:var(--navy)] dark:text-[color:var(--foreground)]"}`}
+        >
+          {label}
+        </span>
+      ) : null}
       <input
         type="number"
         min={0}
         disabled={disabled}
         value={value}
         onChange={onChange}
-        className="w-full rounded-xl border border-slate-200/90 bg-white/90 px-3 py-2.5 text-sm text-[color:var(--navy)] outline-none transition duration-200 focus:border-[color:var(--accent-violet)] focus:ring-2 focus:ring-[color:var(--accent-violet)]/18 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+        className="w-full rounded-xl border border-[color:var(--input-border)] bg-[color:var(--input-bg)] px-3 py-2.5 text-sm text-[color:var(--navy)] outline-none transition duration-200 focus:border-[color:var(--accent-violet)] focus:ring-2 focus:ring-[color:var(--accent-violet)]/18 disabled:cursor-not-allowed disabled:bg-slate-100/80 disabled:text-slate-400 dark:text-[color:var(--foreground)] dark:disabled:bg-slate-800/80 dark:disabled:text-slate-500"
       />
-      <span className={`text-xs ${error ? "text-red-600" : "text-[color:var(--muted)]"}`}>{error || helper}</span>
+      <span className={`text-xs ${error ? "text-red-600 dark:text-red-400" : "text-[color:var(--muted)]"}`}>
+        {error || helper}
+      </span>
     </label>
   );
 }
 
-function RegimeToggle({
+interface SleekPillOption<T extends string> {
+  id: T;
+  label: string;
+}
+
+function SleekPillToggle<T extends string>({
+  ariaLabel,
   value,
   onChange,
+  options,
+  disabled = false,
+  className = "",
 }: {
-  value: TaxRegime;
-  onChange: (regime: TaxRegime) => void;
+  ariaLabel: string;
+  value: T;
+  onChange: (next: T) => void;
+  options: readonly [SleekPillOption<T>, SleekPillOption<T>];
+  disabled?: boolean;
+  className?: string;
 }) {
-  const options: Array<{ id: TaxRegime; label: string }> = [
-    { id: "new", label: "New regime" },
-    { id: "old", label: "Old regime" },
-  ];
+  const activeIndex = options[0].id === value ? 0 : options[1].id === value ? 1 : 0;
 
   return (
     <div
       role="radiogroup"
-      aria-label="Tax regime"
-      className="relative flex w-full max-w-md rounded-2xl border border-slate-200/80 bg-slate-100/70 p-1 shadow-[inset_0_1px_2px_rgba(15,23,42,0.06)]"
+      aria-label={ariaLabel}
+      className={`segmented-pill-track max-w-full ${disabled ? "pointer-events-none opacity-45" : ""} ${className}`}
     >
       <span
         aria-hidden
-        className="regime-toggle-thumb pointer-events-none absolute bottom-1 top-1 rounded-xl bg-white shadow-[0_4px_14px_rgba(109,75,217,0.12)] ring-1 ring-slate-200/50 transition-[left,box-shadow] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+        className="segmented-pill-thumb"
         style={{
-          width: "calc(50% - 6px)",
-          left: value === "new" ? "4px" : "calc(50% + 2px)",
+          left: activeIndex === 0 ? "4px" : "calc(50% + 2px)",
         }}
       />
       {options.map((opt) => {
@@ -314,9 +342,10 @@ function RegimeToggle({
             type="button"
             role="radio"
             aria-checked={active}
+            disabled={disabled}
             onClick={() => onChange(opt.id)}
-            className={`relative z-[1] min-h-[44px] flex-1 rounded-xl px-3 text-sm font-semibold transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent-violet)] ${
-              active ? "text-[color:var(--navy)]" : "text-[color:var(--muted)] hover:text-[color:var(--navy)]"
+            className={`relative z-[1] min-h-[42px] flex-1 rounded-full px-2 text-sm font-semibold tracking-tight transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent-violet)] sm:min-h-[44px] sm:px-3 ${
+              active ? "text-white" : "text-slate-500 dark:text-slate-400"
             }`}
           >
             {opt.label}
@@ -324,6 +353,27 @@ function RegimeToggle({
         );
       })}
     </div>
+  );
+}
+
+function RegimeToggle({
+  value,
+  onChange,
+}: {
+  value: TaxRegime;
+  onChange: (regime: TaxRegime) => void;
+}) {
+  return (
+    <SleekPillToggle
+      ariaLabel="Tax regime"
+      className="max-w-md"
+      value={value}
+      onChange={onChange}
+      options={[
+        { id: "old", label: "Old" },
+        { id: "new", label: "New" },
+      ]}
+    />
   );
 }
 
@@ -347,11 +397,13 @@ function AgeToggle({
             onClick={() => onChange(opt.value)}
             className={`min-h-[44px] flex-1 rounded-xl border px-2 py-2.5 text-left text-sm font-medium transition-all duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent-violet)] sm:text-center ${
               active
-                ? "border-[color:var(--accent-violet)]/35 bg-gradient-to-br from-[color:var(--accent-violet-soft)] to-[color:var(--accent-soft)] text-[color:var(--navy)] shadow-sm"
-                : "border-slate-200/90 bg-slate-50/80 text-[color:var(--muted)] hover:border-slate-300/90 hover:bg-white/60"
+                ? "border-[color:var(--accent-violet)]/35 bg-gradient-to-br from-[color:var(--accent-violet-soft)] to-[color:var(--accent-soft)] text-[color:var(--navy)] shadow-sm dark:from-violet-900/40 dark:to-teal-900/25 dark:text-[color:var(--foreground)]"
+                : "border-slate-200/90 bg-slate-50/80 text-[color:var(--muted)] hover:border-slate-300/90 hover:bg-white/60 dark:border-slate-600/80 dark:bg-slate-900/40 dark:hover:bg-slate-800/50"
             }`}
           >
-            <span className="block font-semibold text-[color:var(--navy)]">{opt.label}</span>
+            <span className="block font-semibold text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+              {opt.label}
+            </span>
             <span className="mt-0.5 block text-xs font-normal text-[color:var(--muted)]">{opt.hint}</span>
           </button>
         );
@@ -375,12 +427,14 @@ function MetricTile({
     <div
       className={`rounded-2xl border p-4 transition-transform duration-200 will-change-transform motion-safe:hover:-translate-y-0.5 ${
         accent
-          ? "border-teal-200/70 bg-gradient-to-br from-teal-50/85 via-white to-violet-50/50 shadow-[0_8px_24px_rgba(13,159,122,0.08)]"
-          : "border-slate-200/75 bg-gradient-to-br from-slate-50/90 to-white/80 hover:border-slate-300/80"
+          ? "border-teal-300/80 bg-gradient-to-br from-teal-100/90 via-white to-violet-100/70 shadow-[0_8px_24px_rgba(13,159,122,0.12)] dark:border-teal-800/50 dark:from-teal-950/40 dark:via-slate-900/50 dark:to-violet-950/35 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)]"
+          : "border-slate-300/85 bg-gradient-to-br from-slate-100/95 to-slate-50/90 hover:border-slate-400/70 dark:border-slate-600/60 dark:from-slate-900/50 dark:to-slate-900/30 dark:hover:border-slate-500/80"
       }`}
     >
       <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">{label}</p>
-      <p className="mt-2 font-display text-xl text-[color:var(--navy)] sm:text-2xl">{value}</p>
+      <p className="mt-2 font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)] sm:text-2xl">
+        {value}
+      </p>
       {caption ? <p className="mt-2 text-xs leading-relaxed text-[color:var(--muted)]">{caption}</p> : null}
     </div>
   );
@@ -415,10 +469,12 @@ function BenefitField({
         disabled={disabled}
         value={disabled ? "0" : value}
         onChange={onChange}
-        className="w-full rounded-xl border border-slate-200/90 bg-white/90 px-3 py-2.5 text-sm text-[color:var(--navy)] outline-none transition duration-200 focus:border-[color:var(--accent-violet)] focus:ring-2 focus:ring-[color:var(--accent-violet)]/15 disabled:cursor-not-allowed disabled:bg-slate-50"
+        className="w-full rounded-xl border border-[color:var(--input-border)] bg-[color:var(--input-bg)] px-3 py-2.5 text-sm text-[color:var(--navy)] outline-none transition duration-200 focus:border-[color:var(--accent-violet)] focus:ring-2 focus:ring-[color:var(--accent-violet)]/15 disabled:cursor-not-allowed disabled:bg-slate-100/80 dark:text-[color:var(--foreground)] dark:disabled:bg-slate-800/80"
       />
       <span className={`text-xs ${disabled ? "text-slate-400" : "text-[color:var(--muted)]"}`}>
-        {cap > 0 ? `${benefit.note}${benefit.directorOnly ? " · Directors & above only." : ""}` : "Not applicable in this setup."}
+        {cap > 0
+          ? `${benefit.note}${benefit.directorOnly ? " · Enable in Advanced if your employer offers this benefit." : ""}`
+          : "Not applicable in this setup."}
       </span>
     </label>
   );
@@ -465,7 +521,9 @@ function BreakdownSection({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Breakdown</p>
-          <h2 className="mt-1 font-display text-2xl text-[color:var(--navy)]">{title}</h2>
+          <h2 className="mt-1 font-display text-2xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+            {title}
+          </h2>
           <p className="mt-1 text-sm text-[color:var(--muted)]">
             Income-tax computation, then payslip deductions for estimated in-hand.
           </p>
@@ -473,7 +531,7 @@ function BreakdownSection({
         <button
           type="button"
           onClick={onToggle}
-          className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98]"
+          className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
         >
           {showDetails ? "See less" : "See more"}
         </button>
@@ -485,7 +543,7 @@ function BreakdownSection({
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[color:var(--muted)]">
               Income tax (FY view)
             </p>
-            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90">
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60">
               <Row label="Gross income (CTC)" value={formatCurrency(result.totalCtc)} />
               <Row label="Employer PF (exempt component)" value={`− ${formatCurrency(result.employerPfDeduction)}`} />
               <Row
@@ -494,6 +552,14 @@ function BreakdownSection({
               />
               <Row label="Standard deduction" value={`− ${formatCurrency(result.standardDeduction)}`} />
               <Row label="Pluxee / flexi exempt" value={`− ${formatCurrency(result.pluxeeExemption)}`} />
+              <Row
+                label="HRA exempt u/s 10(13A)"
+                value={
+                  result.regime === "old"
+                    ? `− ${formatCurrency(result.hraExemption)}`
+                    : "— Not used in new regime"
+                }
+              />
               <Row label="Chapter VI-A" value={`− ${formatCurrency(result.chapterVIADeductions)}`} />
               <Row label="Taxable income" value={formatCurrency(result.taxableIncome)} strong />
               <p className="px-0 py-2 text-[11px] font-semibold uppercase tracking-wide text-[color:var(--muted)]">
@@ -521,7 +587,7 @@ function BreakdownSection({
               Employer PF and Pluxee/flexi are CTC routed to ER PF and benefits (not bank salary). We subtract them
               after tax along with payslip lines so in-hand is cash retained from the package.
             </p>
-            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90">
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60">
               <Row label="Net after income tax" value={formatCurrency(annualAfterTaxBeforePayroll)} />
               <Row
                 label="Employer PF (ER share, from CTC)"
@@ -558,7 +624,7 @@ function BreakdownSection({
 
       <div className="mt-6">
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Composition</p>
-        <div className="flex h-3 overflow-hidden rounded-full bg-slate-100/90 ring-1 ring-slate-200/50 shadow-inner">
+        <div className="flex h-3 overflow-hidden rounded-full bg-slate-100/90 ring-1 ring-slate-200/50 shadow-inner dark:bg-slate-800/90 dark:ring-slate-600/50">
           <div
             className="composition-segment bg-[color:var(--chart-tax)]"
             style={{ width: `${Math.min(taxPercent, 100)}%` }}
@@ -577,13 +643,16 @@ function BreakdownSection({
         </div>
         <div className="mt-3 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-tax)] shadow-sm ring-1 ring-white/50" /> Tax
+            <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-tax)] shadow-sm ring-1 ring-white/50 dark:ring-slate-700/80" />{" "}
+            Tax
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-exempt)] shadow-sm ring-1 ring-white/50" /> Exemptions
+            <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-exempt)] shadow-sm ring-1 ring-white/50 dark:ring-slate-700/80" />{" "}
+            Exemptions
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-net)] shadow-sm ring-1 ring-white/50" /> Net
+            <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-net)] shadow-sm ring-1 ring-white/50 dark:ring-slate-700/80" />{" "}
+            Net
           </span>
         </div>
       </div>
@@ -593,7 +662,9 @@ function BreakdownSection({
 
 function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
-    <div className={`flex items-center justify-between gap-4 py-2.5 ${strong ? "font-semibold text-[color:var(--navy)]" : "text-slate-600"}`}>
+    <div
+      className={`flex items-center justify-between gap-4 py-2.5 ${strong ? "font-semibold text-[color:var(--navy)] dark:text-[color:var(--foreground)]" : "text-slate-600 dark:text-slate-400"}`}
+    >
       <span>{label}</span>
       <span className="tabular-nums">{value}</span>
     </div>
@@ -608,37 +679,47 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Monthly schedule</p>
-          <h2 className="mt-1 font-display text-2xl text-[color:var(--navy)]">Cashflow view</h2>
-          <p className="mt-1 text-sm text-[color:var(--muted)]">Tax spread by month (simplified model).</p>
+          <h2 className="mt-1 font-display text-2xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+            Cashflow view
+          </h2>
+          {/* <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--muted)]">
+            <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+              Real per-month TDS:
+            </span>{" "}
+            each month deducts (annual tax projected so far − TDS already paid) ÷ months remaining. Variable-month rows
+            include the gross variable half and the TDS catch-up that fires at re-projection.
+          </p> */}
         </div>
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
-          className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98]"
+          className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
         >
           {open ? "See less" : "See more"}
         </button>
       </div>
 
       {open ? (
-        <div className="mt-5 overflow-x-auto rounded-xl border border-slate-100">
+        <div className="mt-5 overflow-x-auto rounded-xl border border-slate-100 dark:border-slate-600/70">
           <div className="min-w-[520px]">
-            <div className="grid grid-cols-4 gap-3 border-b border-slate-200 bg-slate-50/80 px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-[color:var(--muted)]">
+            <div className="grid grid-cols-4 gap-2 border-b border-slate-200 bg-slate-50/80 px-2 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--muted)] dark:border-slate-600/70 dark:bg-slate-900/70 sm:gap-3 sm:px-3 sm:text-xs">
               <span>Month</span>
               <span className="text-right">Gross</span>
-              <span className="text-right">Tax</span>
+              <span className="text-right">Tax (TDS est.)</span>
               <span className="text-right">Net in-hand</span>
             </div>
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-slate-100 dark:divide-slate-700/80">
               {rows.map((row) => (
                 <div
                   key={row.month}
-                        className={`grid grid-cols-4 gap-3 px-3 py-2.5 text-sm transition-colors duration-300 ${row.highlight ? "bg-gradient-to-r from-violet-50/80 to-teal-50/50 font-medium" : ""}`}
+                  className={`grid grid-cols-4 gap-2 px-2 py-2.5 text-xs transition-colors duration-300 sm:gap-3 sm:px-3 sm:text-sm ${row.highlight ? "bg-gradient-to-r from-violet-50/80 to-teal-50/50 font-medium dark:from-violet-950/40 dark:to-teal-950/30" : ""}`}
                 >
-                  <span className="text-[color:var(--navy)]">{row.month}</span>
-                  <span className="text-right tabular-nums text-slate-700">{formatCurrency(row.gross)}</span>
-                  <span className="text-right tabular-nums text-slate-700">{formatCurrency(row.tax)}</span>
-                  <span className="text-right tabular-nums text-[color:var(--navy)]">{formatCurrency(row.net)}</span>
+                  <span className="text-[color:var(--navy)] dark:text-[color:var(--foreground)]">{row.month}</span>
+                  <span className="text-right tabular-nums text-slate-700 dark:text-slate-300">{formatCurrency(row.gross)}</span>
+                  <span className="text-right tabular-nums text-slate-700 dark:text-slate-300">{formatCurrency(row.tax)}</span>
+                  <span className="text-right tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                    {formatCurrency(row.netAfterTax)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -656,30 +737,48 @@ export default function HomePage() {
   const [showBreakdown, setShowBreakdown] = useState(false);
 
   const fixedPay = numericValue(state.fixedPay);
-  const variablePay = numericValue(state.variablePay);
+  const variablePayRaw = numericValue(state.variablePay);
+  const variablePayAnnual = deriveVariablePayAnnual(fixedPay, variablePayRaw, state.variablePayMode);
   const employerPf = numericValue(state.employerPf);
   const professionalTax = numericValue(state.professionalTax);
   const employeePfAnnual = numericValue(state.employeePfAnnual);
   const lwfEmployeeAnnual = numericValue(state.lwfEmployeeAnnual);
   const otherPayrollAnnual = numericValue(state.otherPayrollAnnual);
-  const totalCtc = fixedPay + variablePay;
-  const canEnableDirector = totalCtc >= DIRECTOR_MIN_CTC;
+  const totalCtc = fixedPay + variablePayAnnual;
+  const variableMonthCount = state.variableMonthSelected.filter(Boolean).length;
 
-  useEffect(() => {
-    if (!canEnableDirector && state.isDirectorEligible) {
-      setState((current) => ({
-        ...current,
-        isDirectorEligible: false,
-        benefits: { ...current.benefits, driver: "0" },
-      }));
-    }
-  }, [canEnableDirector, state.isDirectorEligible]);
+  const defaultHraReceivedAnnual = useMemo(
+    () => Math.round(fixedPay * HRA_RECEIVED_DEFAULT_OF_FIXED),
+    [fixedPay],
+  );
+
+  const hraExemptAnnual = useMemo(() => {
+    const annualHraReceived = state.hraReceivedManual
+      ? numericValue(state.hraReceivedAnnual)
+      : defaultHraReceivedAnnual;
+    return computeHraExemption({
+      annualRentPaid: numericValue(state.hraRentAnnual),
+      annualHraReceived,
+      salaryForHra: fixedPay,
+      isMetro: state.hraIsMetro,
+    });
+  }, [
+    defaultHraReceivedAnnual,
+    fixedPay,
+    state.hraIsMetro,
+    state.hraReceivedAnnual,
+    state.hraReceivedManual,
+    state.hraRentAnnual,
+  ]);
+
+  const hraReceivedFieldValue = state.hraReceivedManual
+    ? state.hraReceivedAnnual
+    : String(defaultHraReceivedAnnual);
 
   const errors = useMemo(() => {
     const nextErrors: ValidationErrors = {};
     const salaryChecks: Array<[SalaryField, number, number]> = [
       ["fixedPay", fixedPay, Number.MAX_SAFE_INTEGER],
-      ["variablePay", variablePay, Number.MAX_SAFE_INTEGER],
       ["employerPf", employerPf, MAX_EMPLOYER_PF],
       ["professionalTax", professionalTax, MAX_PROFESSIONAL_TAX],
     ];
@@ -687,6 +786,17 @@ export default function HomePage() {
       if (value < 0) nextErrors[field] = "Cannot be negative.";
       else if (value > max) nextErrors[field] = "Value too high.";
     });
+    if (state.variablePayMode === "amount") {
+      if (variablePayRaw < 0) nextErrors.variablePay = "Cannot be negative.";
+      else if (variablePayRaw > MAX_GROSS_INCOME) nextErrors.variablePay = "Value too high.";
+    } else if (variablePayRaw < 0) {
+      nextErrors.variablePay = "Cannot be negative.";
+    } else if (variablePayRaw > 100) {
+      nextErrors.variablePay = "Percent cannot exceed 100.";
+    }
+    if (variablePayAnnual > 0 && variableMonthCount === 0) {
+      nextErrors.variableMonths = "Select at least one month when variable pay is greater than zero.";
+    }
     const payrollChecks: Array<[PayrollField, number, number]> = [
       ["employeePfAnnual", employeePfAnnual, MAX_PAYROLL_LINE_ANNUAL],
       ["lwfEmployeeAnnual", lwfEmployeeAnnual, MAX_PAYROLL_LINE_ANNUAL],
@@ -703,13 +813,12 @@ export default function HomePage() {
     });
     benefitConfigs.forEach((benefit) => {
       const raw = numericValue(state.benefits[benefit.key]);
-      const cap = getBenefitCap(benefit, state.preferredRegime, state.isDirectorEligible && canEnableDirector);
+      const cap = getBenefitCap(benefit, state.preferredRegime, state.isDirectorEligible);
       if (raw < 0) nextErrors[benefit.key] = "Cannot be negative.";
       else if (raw > cap && cap > 0) nextErrors[benefit.key] = `Max ${formatCurrency(cap)}.`;
     });
     return nextErrors;
   }, [
-    canEnableDirector,
     employeePfAnnual,
     employerPf,
     fixedPay,
@@ -720,7 +829,10 @@ export default function HomePage() {
     state.deductions,
     state.isDirectorEligible,
     state.preferredRegime,
-    variablePay,
+    state.variablePayMode,
+    variableMonthCount,
+    variablePayAnnual,
+    variablePayRaw,
   ]);
 
   const benefitExemptions = useMemo(
@@ -728,22 +840,23 @@ export default function HomePage() {
       (["old", "new"] as TaxRegime[]).reduce<Record<TaxRegime, number>>(
         (acc, regime) => {
           acc[regime] = benefitConfigs.reduce((sum, benefit) => {
-            const cap = getBenefitCap(benefit, regime, state.isDirectorEligible && canEnableDirector);
+            const cap = getBenefitCap(benefit, regime, state.isDirectorEligible);
             return sum + clamp(numericValue(state.benefits[benefit.key]), 0, cap);
           }, 0);
           return acc;
         },
         { old: 0, new: 0 },
       ),
-    [canEnableDirector, state.benefits, state.isDirectorEligible],
+    [state.benefits, state.isDirectorEligible],
   );
 
   const baseInput = {
     fixedPay,
-    variablePay,
+    variablePay: variablePayAnnual,
     employerPf,
     professionalTax,
     ageGroup: state.ageGroup,
+    hraExemption: hraExemptAnnual,
     oldRegimeDeductions: {
       deduction80C: numericValue(state.deductions.deduction80C),
       deduction80CCD1B: numericValue(state.deductions.deduction80CCD1B),
@@ -770,30 +883,52 @@ export default function HomePage() {
   const activeWithoutBenefits =
     state.preferredRegime === "old" ? comparisonWithoutBenefits.oldRegime : comparisonWithoutBenefits.newRegime;
 
-  const schedule = useMemo(
-    () => buildMonthlySchedule(totalCtc, variablePay, activeWithBenefits.totalTax),
-    [activeWithBenefits.totalTax, totalCtc, variablePay],
-  );
-
-  const postPayrollMonthly = useMemo(() => {
-    const payrollCashOut =
+  const payrollCashOutAnnual = useMemo(
+    () =>
       activeWithBenefits.employerPfDeduction +
       activeWithBenefits.pluxeeExemption +
       employeePfAnnual +
       otherPayrollAnnual +
       professionalTax +
-      lwfEmployeeAnnual;
-    return Math.max(0, totalCtc - activeWithBenefits.totalTax - payrollCashOut) / 12;
-  }, [
-    activeWithBenefits.employerPfDeduction,
-    activeWithBenefits.pluxeeExemption,
-    activeWithBenefits.totalTax,
-    employeePfAnnual,
-    lwfEmployeeAnnual,
-    otherPayrollAnnual,
-    professionalTax,
-    totalCtc,
-  ]);
+      lwfEmployeeAnnual,
+    [
+      activeWithBenefits.employerPfDeduction,
+      activeWithBenefits.pluxeeExemption,
+      employeePfAnnual,
+      lwfEmployeeAnnual,
+      otherPayrollAnnual,
+      professionalTax,
+    ],
+  );
+
+  const scheduleVariableMask = useMemo(() => {
+    if (variablePayAnnual > 0 && variableMonthCount === 0) {
+      return FY_MONTH_LABELS.map(() => true);
+    }
+    return state.variableMonthSelected;
+  }, [state.variableMonthSelected, variableMonthCount, variablePayAnnual]);
+
+  const schedule = useMemo(
+    () =>
+      buildMonthlyCashflow({
+        fixedPayAnnual: fixedPay,
+        variablePayAnnual: variablePayAnnual,
+        variableMonthSelected: scheduleVariableMask,
+        totalCtc,
+        totalTaxAnnual: activeWithBenefits.totalTax,
+      }),
+    [
+      activeWithBenefits.totalTax,
+      fixedPay,
+      scheduleVariableMask,
+      totalCtc,
+      variablePayAnnual,
+    ],
+  );
+
+  const postPayrollMonthly = useMemo(() => {
+    return Math.max(0, totalCtc - activeWithBenefits.totalTax - payrollCashOutAnnual) / 12;
+  }, [activeWithBenefits.totalTax, payrollCashOutAnnual, totalCtc]);
 
   const payrollAnnualBreakdown = useMemo(
     (): PayrollAnnualBreakdown => ({
@@ -810,19 +945,20 @@ export default function HomePage() {
     [activeWithBenefits.totalTax, activeWithoutBenefits.totalTax],
   );
 
-  const whatChangedMessage = useMemo(() => {
-    const without = comparisonWithoutBenefits.bestRegime === "old" ? "Old regime" : "New regime";
-    const withB = comparisonWithBenefits.bestRegime === "old" ? "Old regime" : "New regime";
-    const same = comparisonWithoutBenefits.bestRegime === comparisonWithBenefits.bestRegime;
-    const regimeLine = same
-      ? `${withB} stays best with Pluxee applied.`
-      : `${withB} becomes better once Pluxee is included.`;
-    return `${without} is best without flexi benefits. ${regimeLine} Extra tax saved with Pluxee in this view: ${formatCurrency(flexiTaxSavedAnnual)}.`;
-  }, [
-    comparisonWithBenefits.bestRegime,
-    comparisonWithoutBenefits.bestRegime,
-    flexiTaxSavedAnnual,
-  ]);
+  const regimeSavingsVersusOther = useMemo(() => {
+    const { savings, bestRegime } = comparisonWithBenefits;
+    if (savings === 0) {
+      return { tie: true as const, savings: 0 };
+    }
+    const betterName = bestRegime === "old" ? "old" : "new";
+    const worseName = bestRegime === "old" ? "new" : "old";
+    return { tie: false as const, savings, betterName, worseName };
+  }, [comparisonWithBenefits]);
+
+  const flexiFlipsBestRegime = useMemo(
+    () => comparisonWithoutBenefits.bestRegime !== comparisonWithBenefits.bestRegime,
+    [comparisonWithBenefits.bestRegime, comparisonWithoutBenefits.bestRegime],
+  );
 
   const handleSalaryChange = (field: SalaryField) => (event: ChangeEvent<HTMLInputElement>) => {
     setState((current) => ({ ...current, [field]: event.target.value }));
@@ -849,17 +985,38 @@ export default function HomePage() {
   const oldRegimeDisabled = state.preferredRegime !== "old";
 
   return (
-    <main className="min-h-screen pb-12">
+    <main className="min-h-screen pb-12 text-[color:var(--foreground)]">
       <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         <header className="hero-wash soft-ring animate-fade-in-up mb-8 rounded-[1.75rem] border border-[color:var(--line)] px-5 py-5 sm:px-6">
-          <div className="relative z-[1] flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="bg-gradient-to-r from-[color:var(--navy)] via-[color:var(--accent-violet)] to-[color:var(--accent)] bg-clip-text font-display text-2xl tracking-tight text-transparent motion-reduce:bg-none motion-reduce:text-[color:var(--navy)]">
+          <div className="relative z-[1] flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0 flex-1">
+              <p className="bg-gradient-to-r from-[color:var(--navy)] via-[color:var(--accent-violet)] to-[color:var(--accent)] bg-clip-text font-display text-2xl tracking-tight text-transparent motion-reduce:bg-none motion-reduce:text-[color:var(--navy)] dark:from-[color:var(--foreground)] dark:via-violet-300 dark:to-teal-300">
                 Income Tax Calculator
               </p>
               <p className="mt-1 max-w-xl text-sm leading-relaxed text-[color:var(--muted)]">
-                FY 2024-25 · old &amp; new regime, flexi benefits, and take-home estimates
+                FY 2024-25 · old &amp; new regime, flexi exemptions, HRA (old regime), and take-home estimates
               </p>
+            </div>
+            <div className="flex shrink-0 flex-col items-stretch gap-3 sm:items-end">
+              <ThemeToggle />
+              <div
+                className={`max-w-md rounded-2xl border px-4 py-3 text-sm leading-snug shadow-sm ${
+                  regimeSavingsVersusOther.tie
+                    ? "border-slate-200/80 bg-slate-50/80 text-[color:var(--muted)] dark:border-slate-600/60 dark:bg-slate-900/40"
+                    : "border-teal-200/60 bg-gradient-to-br from-teal-50/90 to-violet-50/50 text-[color:var(--navy)] dark:border-teal-800/50 dark:from-teal-950/50 dark:to-violet-950/40 dark:text-[color:var(--foreground)]"
+                }`}
+              >
+                {regimeSavingsVersusOther.tie ? (
+                  <span>Old and new regime income tax is the same on these inputs.</span>
+                ) : (
+                  <span>
+                    You save{" "}
+                    <span className="font-semibold tabular-nums">{formatCurrency(regimeSavingsVersusOther.savings)}</span>{" "}
+                    per year by choosing the <span className="font-semibold">{regimeSavingsVersusOther.betterName}</span>{" "}
+                    regime over the <span className="font-medium">{regimeSavingsVersusOther.worseName}</span> regime.
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </header>
@@ -869,42 +1026,110 @@ export default function HomePage() {
             <SectionCard>
               <div className="mb-5">
                 <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Quick setup</p>
-                <h1 className="mt-1 font-display text-2xl tracking-tight text-[color:var(--navy)]">Your pay</h1>
+                <h1 className="mt-1 font-display text-2xl tracking-tight text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                  Your pay
+                </h1>
               </div>
 
               <div className="space-y-5">
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="grid gap-4 sm:grid-cols-1">
                   <InputField
-                    label="Fixed compensation"
+                    label="Fixed compensation (annual)"
                     value={state.fixedPay}
                     helper=""
                     error={errors.fixedPay}
                     onChange={handleSalaryChange("fixedPay")}
                   />
-                  <InputField
-                    label="Variable pay / bonus"
-                    value={state.variablePay}
-                    helper=""
-                    error={errors.variablePay}
-                    onChange={handleSalaryChange("variablePay")}
-                  />
+                  <div className="space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--nested-panel)] p-4 dark:border-slate-600/55 dark:bg-slate-950/35">
+                    <p className="text-sm font-semibold text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      Variable pay
+                    </p>
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                        Variable type
+                      </p>
+                      <SleekPillToggle
+                        ariaLabel="Variable pay input type"
+                        value={state.variablePayMode}
+                        onChange={(mode) => setState((c) => ({ ...c, variablePayMode: mode }))}
+                        options={[
+                          { id: "amount", label: "Amount (₹)" },
+                          { id: "percent", label: "Percentage (%)" },
+                        ]}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                        {state.variablePayMode === "amount" ? "Variable value (₹/yr)" : "Variable value (%)"}
+                      </p>
+                      <InputField
+                        label=""
+                        value={state.variablePay}
+                        helper={
+                          state.variablePayMode === "amount"
+                            ? `Used in tax as ${formatCurrency(variablePayAnnual)} / year.`
+                            : `≈ ${formatCurrency(variablePayAnnual)} / year from your fixed pay.`
+                        }
+                        error={errors.variablePay}
+                        onChange={handleSalaryChange("variablePay")}
+                      />
+                    </div>
+                    {errors.variableMonths ? (
+                      <p className="text-xs text-red-600 dark:text-red-400">{errors.variableMonths}</p>
+                    ) : null}
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                        Variable disbursement months ({variableMonthCount}/12)
+                      </p>
+                      <p className="text-[11px] leading-relaxed text-[color:var(--muted)]">
+                        Cashflow splits variable equally across selected FY months (simplified).
+                      </p>
+                      <div className="flex flex-wrap gap-1.5 md:max-w-[300px] md:mx-auto">
+                        {FY_MONTH_LABELS.map((label, index) => {
+                          const on = state.variableMonthSelected[index];
+                          return (
+                            <button
+                              key={label}
+                              type="button"
+                              onClick={() =>
+                                setState((c) => {
+                                  const next = [...c.variableMonthSelected];
+                                  next[index] = !next[index];
+                                  return { ...c, variableMonthSelected: next };
+                                })
+                              }
+                              className={`min-h-[36px] min-w-[2.75rem] rounded-full border px-2.5 text-xs font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--accent-violet)] ${
+                                on
+                                  ? "border-transparent bg-gradient-to-b from-violet-500 to-violet-700 text-white shadow-[0_0_12px_rgba(139,92,246,0.42)] dark:from-violet-400 dark:to-violet-700 dark:shadow-[0_0_16px_rgba(167,139,250,0.38)]"
+                                  : "border border-[color:var(--pill-track-border)] bg-[color:var(--pill-track)] text-[color:var(--muted)] hover:border-slate-300/80 dark:hover:border-slate-500/80"
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="space-y-4 rounded-2xl border border-slate-100 bg-slate-50/40 p-4">
+                <div className="space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--nested-panel)] p-4 dark:border-slate-600/50 dark:bg-slate-950/40">
                   <div>
                     <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Total CTC</p>
-                    <p className="mt-1 font-display text-3xl text-[color:var(--navy)]">{formatCurrency(totalCtc)}</p>
+                    <p className="mt-1 font-display text-3xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      {formatCurrency(totalCtc)}
+                    </p>
                   </div>
                   <div className="space-y-3">
                     <p className="text-xs font-medium text-[color:var(--muted)]">Regime</p>
                     <RegimeToggle value={state.preferredRegime} onChange={(regime) => setState((c) => ({ ...c, preferredRegime: regime }))} />
                     <p className="text-xs font-medium text-[color:var(--muted)]">Age</p>
                     <AgeToggle value={state.ageGroup} onChange={(age) => setState((c) => ({ ...c, ageGroup: age }))} />
-                    <div className="flex justify-end border-t border-slate-200/80 pt-3">
+                    <div className="flex justify-end border-t border-slate-200/80 pt-3 dark:border-slate-600/60">
                       <button
                         type="button"
                         onClick={() => setState((c) => ({ ...c, advancedOpen: !c.advancedOpen }))}
-                        className="rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98]"
+                        className="rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
                       >
                         {state.advancedOpen ? "Hide assumptions" : "Advanced"}
                       </button>
@@ -913,7 +1138,7 @@ export default function HomePage() {
                 </div>
 
                 {state.advancedOpen ? (
-                  <div className="space-y-4 rounded-2xl border border-slate-100 bg-white p-4">
+                  <div className="space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--card)] p-4 dark:border-slate-600/55 dark:bg-slate-950/50">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--muted)]">
                         Employer PF &amp; professional tax
@@ -935,8 +1160,10 @@ export default function HomePage() {
                         />
                       </div>
                     </div>
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-4">
-                      <p className="text-sm font-medium text-[color:var(--navy)]">Estimated take-home (cashflow)</p>
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-4 dark:border-slate-600/60 dark:bg-slate-900/45">
+                      <p className="text-sm font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                        Estimated take-home (cashflow)
+                      </p>
                       <p className="mt-1 text-xs leading-relaxed text-[color:var(--muted)]">
                         After income tax, we subtract employer PF, Pluxee/flexi (non-cash benefits), employee PF, PT,
                         LWF, and other lines from CTC so monthly in-hand matches cash retained from the package.
@@ -965,17 +1192,21 @@ export default function HomePage() {
                         />
                       </div>
                     </div>
-                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-600/60 dark:bg-slate-900/30">
                       <input
                         type="checkbox"
-                        checked={state.isDirectorEligible && canEnableDirector}
-                        disabled={!canEnableDirector}
+                        checked={state.isDirectorEligible}
                         onChange={(e) => setState((c) => ({ ...c, isDirectorEligible: e.target.checked }))}
-                        className="mt-1 h-4 w-4 rounded border-slate-300 text-[color:var(--accent-violet)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-violet)]/30 focus-visible:ring-offset-1"
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-[color:var(--accent-violet)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-violet)]/30 focus-visible:ring-offset-1 dark:border-slate-500"
                       />
                       <span>
-                        <span className="block text-sm font-medium text-[color:var(--navy)]">Directors &amp; above</span>
-                        <span className="text-xs text-[color:var(--muted)]">Unlocks driver benefit when CTC ≥ ₹80 lakh.</span>
+                        <span className="block text-sm font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          Driver / chauffeur benefit (company policy)
+                        </span>
+                        <span className="text-xs text-[color:var(--muted)]">
+                          Turn on if your employer offers the tax-exempt driver allowance so you can enter it under
+                          flexi.
+                        </span>
                       </span>
                     </label>
                   </div>
@@ -986,7 +1217,9 @@ export default function HomePage() {
             <SectionCard className={oldRegimeDisabled ? "opacity-55" : ""}>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="md:max-w-[200px]">
-                  <h2 className="font-display text-xl text-[color:var(--navy)]">Chapter VI-A</h2>
+                  <h2 className="font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                    Chapter VI-A
+                  </h2>
                   <p className="mt-1 text-sm text-[color:var(--muted)]">
                     {oldRegimeDisabled
                       ? "Only active in old regime — switch regime to edit."
@@ -996,7 +1229,7 @@ export default function HomePage() {
                 <button
                   type="button"
                   onClick={() => setState((c) => ({ ...c, deductionsOpen: !c.deductionsOpen }))}
-                  className="rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98]"
+                  className="rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
                 >
                   {state.deductionsOpen ? "See less" : "See more"}
                 </button>
@@ -1023,115 +1256,203 @@ export default function HomePage() {
                 </div>
               ) : null}
             </SectionCard>
+
+            <SectionCard className={oldRegimeDisabled ? "opacity-55" : ""}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                    Section 10(13A)
+                  </p>
+                  <h2 className="mt-1 font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                    House Rent Allowance (HRA)
+                  </h2>
+                  <p className="mt-1 text-sm text-[color:var(--muted)]">
+                    {oldRegimeDisabled
+                      ? "HRA exemption applies in the old regime only — switch to Old to edit and include it in tax."
+                      : "Exemption is the least of: HRA received, rent paid minus 10% of annual fixed pay, and 50% (metro) or 40% (non-metro) of that pay. It reduces taxable income in the old regime only."}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-5 space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--nested-panel)] p-4 dark:border-slate-600/55 dark:bg-slate-950/35">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <p className="text-xs font-medium text-[color:var(--muted)]">Computed exempt HRA (annual)</p>
+                  <p className="font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                    {formatCurrency(hraExemptAnnual)}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                    City type
+                  </p>
+                  <SleekPillToggle
+                    ariaLabel="Metro or non-metro for HRA"
+                    className="max-w-md"
+                    value={state.hraIsMetro ? "metro" : "nonmetro"}
+                    onChange={(v) => setState((c) => ({ ...c, hraIsMetro: v === "metro" }))}
+                    disabled={oldRegimeDisabled}
+                    options={[
+                      { id: "metro", label: "Metro" },
+                      { id: "nonmetro", label: "Non-Metro" },
+                    ]}
+                  />
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <InputField
+                    label="Annual rent paid"
+                    value={state.hraRentAnnual}
+                    helper=""
+                    error={undefined}
+                    disabled={oldRegimeDisabled}
+                    onChange={(e) => setState((c) => ({ ...c, hraRentAnnual: e.target.value }))}
+                  />
+                  <InputField
+                    label="Annual HRA received (from employer)"
+                    value={hraReceivedFieldValue}
+                    helper="Defaults to 25% of annual fixed pay until you change it."
+                    error={undefined}
+                    disabled={oldRegimeDisabled}
+                    onChange={(e) =>
+                      setState((c) => ({
+                        ...c,
+                        hraReceivedManual: true,
+                        hraReceivedAnnual: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+            </SectionCard>
           </div>
 
           <div className="stagger-children space-y-6">
-            <div className="stagger-children grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <MetricTile
-                label="Best without Pluxee"
-                value={comparisonWithoutBenefits.bestRegime === "old" ? "Old" : "New"}
-              />
-              <MetricTile
-                label="Best with Pluxee"
-                value={comparisonWithBenefits.bestRegime === "old" ? "Old" : "New"}
-                accent
-              />
-              <MetricTile label="Pluxee tax saved" value={formatCurrency(flexiTaxSavedAnnual)} />
-              <MetricTile
-                label="After income tax (monthly)"
-                value={formatCurrency(activeWithBenefits.monthlyNetInHand)}
-              />
-              <MetricTile
-                label="After payroll (est. monthly)"
-                value={formatCurrency(Math.round(postPayrollMonthly))}
-              />
-            </div>
-
             <SectionCard>
-              <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Summary</p>
-              <p className="mt-2 text-sm leading-relaxed text-slate-700">{whatChangedMessage}</p>
-              <p className="mt-3 text-sm text-[color:var(--muted)]">
-                Selected regime tax: <span className="font-semibold text-[color:var(--navy)]">{formatCurrency(activeWithBenefits.totalTax)}</span>
-              </p>
-            </SectionCard>
-
-            <SectionCard>
-              <h2 className="font-display text-xl text-[color:var(--navy)]">Tax snapshot</h2>
+              <h2 className="font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                Tax snapshot
+              </h2>
               <p className="mt-1 text-sm text-[color:var(--muted)]">
-                How flexi changes tax in your <span className="font-medium text-[color:var(--navy)]">{state.preferredRegime === "old" ? "old" : "new"}</span> regime, then how old and new compare using the same flexi inputs.
+                Selected regime:{" "}
+                <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                  {state.preferredRegime === "old" ? "Old" : "New"}
+                </span>
+                . Annual comparison uses your flexi under each regime&apos;s rules.
               </p>
 
-              <div className="mt-6 space-y-8">
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">
-                    Flexi in your selected regime
-                  </p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                    <MetricTile
-                      label="Tax before flexi (annual)"
-                      value={formatCurrency(activeWithoutBenefits.totalTax)}
-                      caption="Income tax when flexi is not treated as exempt."
-                    />
-                    <MetricTile
-                      label="Tax after flexi (annual)"
-                      value={formatCurrency(activeWithBenefits.totalTax)}
-                      caption="Income tax with your flexi amounts applied."
-                    />
-                    <MetricTile
-                      label="You save (annual)"
-                      value={formatCurrency(flexiTaxSavedAnnual)}
-                      accent={flexiTaxSavedAnnual > 0}
-                      caption={
-                        flexiTaxSavedAnnual === 0
-                          ? "Enter flexi amounts below to see savings."
-                          : "Versus leaving all flexi at zero."
-                      }
-                    />
-                  </div>
-                  <p className="mt-2 text-xs text-[color:var(--muted)]">
-                    Flexi treated as exempt (annual):{" "}
-                    <span className="font-medium text-[color:var(--navy)]">
-                      {formatCurrency(benefitExemptions[state.preferredRegime])}
-                    </span>
-                  </p>
+              <div className="mt-5 space-y-5 rounded-2xl border border-slate-300/85 bg-gradient-to-br from-slate-100/95 to-slate-50/90 p-4 dark:border-slate-600/60 dark:from-slate-900/50 dark:to-slate-900/30 sm:p-5">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <MetricTile
+                    label="Est. in hand / month (after payroll)"
+                    value={formatCurrency(Math.round(postPayrollMonthly))}
+                    accent
+                  />
+                  <MetricTile
+                    label="Flexi lowers tax / year"
+                    value={formatCurrency(flexiTaxSavedAnnual)}
+                    caption={
+                      flexiTaxSavedAnnual === 0
+                        ? "Add flexi below to see savings vs zero flexi."
+                        : "Versus flexi at zero in your selected regime."
+                    }
+                  />
                 </div>
 
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">
-                    Old vs new regime (same flexi inputs)
+                <div className="border-t border-slate-200/90 pt-4 text-sm leading-relaxed text-[color:var(--muted)] dark:border-slate-600/50">
+                  <p>
+                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      Old
+                    </span>{" "}
+                    {formatCurrency(comparisonWithBenefits.oldRegime.totalTax)}
+                    <span className="mx-1.5 text-[color:var(--muted)]">·</span>
+                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      New
+                    </span>{" "}
+                    {formatCurrency(comparisonWithBenefits.newRegime.totalTax)}
+                    {regimeSavingsVersusOther.tie ? (
+                      <span> — same annual tax with your flexi.</span>
+                    ) : (
+                      <span>
+                        {" "}
+                        — with flexi,{" "}
+                        <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {regimeSavingsVersusOther.betterName}
+                        </span>{" "}
+                        saves {formatCurrency(regimeSavingsVersusOther.savings)}/year vs{" "}
+                        {regimeSavingsVersusOther.worseName}.
+                      </span>
+                    )}
                   </p>
-                  <p className="mt-1 text-xs text-[color:var(--muted)]">
-                    Totals use your current flexi amounts under each regime&apos;s rules.
-                  </p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <MetricTile
-                      label="Old regime tax (annual)"
-                      value={formatCurrency(comparisonWithBenefits.oldRegime.totalTax)}
-                      accent={state.preferredRegime === "old"}
-                    />
-                    <MetricTile
-                      label="New regime tax (annual)"
-                      value={formatCurrency(comparisonWithBenefits.newRegime.totalTax)}
-                      accent={state.preferredRegime === "new"}
-                    />
-                  </div>
+                  {flexiFlipsBestRegime ? (
+                    <p className="mt-2 text-xs text-[color:var(--muted)]">
+                      Best regime without flexi:{" "}
+                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                        {comparisonWithoutBenefits.bestRegime === "old" ? "Old" : "New"}
+                      </span>
+                      . With flexi:{" "}
+                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                        {comparisonWithBenefits.bestRegime === "old" ? "Old" : "New"}
+                      </span>
+                      .
+                    </p>
+                  ) : null}
                 </div>
+
+                <details className="border-t border-slate-200/90 pt-3 dark:border-slate-600/50">
+                  <summary className="cursor-pointer list-none text-sm font-medium text-[color:var(--navy)] outline-none marker:content-none dark:text-[color:var(--foreground)] [&::-webkit-details-marker]:hidden">
+                    Tax math with flexi
+                  </summary>
+                  <div className="mt-3 space-y-3 text-xs text-[color:var(--muted)]">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <p>
+                        <span className="block font-medium uppercase tracking-wide text-[color:var(--muted)]">
+                          Tax before flexi (annual)
+                        </span>
+                        <span className="mt-1 block font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {formatCurrency(activeWithoutBenefits.totalTax)}
+                        </span>
+                        <span className="mt-0.5 block">In {state.preferredRegime === "old" ? "old" : "new"} regime.</span>
+                      </p>
+                      <p>
+                        <span className="block font-medium uppercase tracking-wide text-[color:var(--muted)]">
+                          Tax after flexi (annual)
+                        </span>
+                        <span className="mt-1 block font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {formatCurrency(activeWithBenefits.totalTax)}
+                        </span>
+                      </p>
+                    </div>
+                    <p>
+                      Flexi treated as exempt (annual):{" "}
+                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                        {formatCurrency(benefitExemptions[state.preferredRegime])}
+                      </span>
+                    </p>
+                    <p>
+                      After income tax only (monthly):{" "}
+                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                        {formatCurrency(activeWithBenefits.monthlyNetInHand)}
+                      </span>
+                      <span className="text-[color:var(--muted)]"> — before PF, PT, LWF, flexi payroll.</span>
+                    </p>
+                  </div>
+                </details>
               </div>
-              <p className="mt-6 text-xs text-[color:var(--muted)]">
-                Taxable income, exemptions, and effective rate for the selected regime are in the breakdown below.
+
+              <p className="mt-4 text-xs text-[color:var(--muted)]">
+                Taxable income, exemptions, and effective rate: see breakdown below.
               </p>
             </SectionCard>
 
             <SectionCard>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <h2 className="font-display text-xl text-[color:var(--navy)]">Flexi benefits (Pluxee)</h2>
+                  <h2 className="font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                    Flexi benefits (Pluxee)
+                  </h2>
                   <p className="mt-1 text-sm text-[color:var(--muted)]">Annual exempt amounts.</p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setState((c) => ({ ...c, flexiOpen: !c.flexiOpen }))}
-                  className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98]"
+                  className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
                 >
                   {state.flexiOpen ? "See less" : "See more"}
                 </button>
@@ -1144,7 +1465,7 @@ export default function HomePage() {
                         benefit={benefit}
                         regime={state.preferredRegime}
                         value={state.benefits[benefit.key]}
-                        isDirectorEligible={state.isDirectorEligible && canEnableDirector}
+                        isDirectorEligible={state.isDirectorEligible}
                         onChange={handleBenefitChange(benefit.key)}
                       />
                       {errors[benefit.key] ? <p className="mt-1 text-xs text-red-600">{errors[benefit.key]}</p> : null}
@@ -1153,7 +1474,11 @@ export default function HomePage() {
                 </div>
               ) : (
                 <p className="mt-4 text-sm text-[color:var(--muted)]">
-                  Collapsed by default — use <span className="font-medium text-[color:var(--navy)]">See more</span> to edit
+                  Collapsed by default — use{" "}
+                  <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                    See more
+                  </span>{" "}
+                  to edit
                   flexi amounts (tax still uses your saved values).
                 </p>
               )}
@@ -1171,6 +1496,19 @@ export default function HomePage() {
           </div>
         </div>
       </div>
+
+      <footer className="mx-auto mt-16 max-w-7xl border-t border-[color:var(--line)] px-4 py-10 sm:px-6 lg:px-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <p className="max-w-3xl text-xs leading-relaxed text-[color:var(--muted)]">
+            This tool produces estimates for illustration only. Tax outcomes depend on your employer&apos;s payroll,
+            declarations, proofs, and CBDT rules in force. It is not legal, tax, or financial advice — confirm with your
+            payroll team or a qualified chartered accountant before acting.
+          </p>
+          <p className="text-sm text-[color:var(--muted)] sm:text-right">
+            Built with <span className="text-red-500">&#9829;</span> for clearer salary planning.
+          </p>
+        </div>
+      </footer>
     </main>
   );
 }

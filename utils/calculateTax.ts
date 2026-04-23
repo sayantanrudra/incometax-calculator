@@ -32,6 +32,8 @@ export interface TaxCalculationInput {
   ageGroup: AgeGroup;
   regime: TaxRegime;
   pluxeeExemption: number;
+  /** Section 10(13A); applied only when regime is old (pass 0 for new). */
+  hraExemption: number;
   oldRegimeDeductions: OldRegimeDeductionsInput;
 }
 
@@ -43,6 +45,8 @@ export interface TaxComparisonInput {
   ageGroup: AgeGroup;
   oldRegimeDeductions: OldRegimeDeductionsInput;
   pluxeeExemptions?: Partial<Record<TaxRegime, number>>;
+  /** Precomputed 10(13A) exempt amount; old regime only. */
+  hraExemption?: number;
 }
 
 export interface TaxComputation {
@@ -53,6 +57,7 @@ export interface TaxComputation {
   employerPfDeduction: number;
   professionalTaxDeduction: number;
   pluxeeExemption: number;
+  hraExemption: number;
   chapterVIADeductions: number;
   totalExemptions: number;
   taxableIncome: number;
@@ -335,12 +340,15 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     input.ageGroup,
   );
   const pluxeeExemption = clamp(input.pluxeeExemption, 0, totalCtc);
+  const hraExemption =
+    input.regime === "old" ? clamp(input.hraExemption ?? 0, 0, totalCtc) : 0;
   const totalExemptions =
     standardDeduction +
     employerPfDeduction +
     professionalTaxDeduction +
     chapterVIADeductions +
-    pluxeeExemption;
+    pluxeeExemption +
+    hraExemption;
   const taxableIncome = Math.max(0, totalCtc - totalExemptions);
   const taxBeforeCess = computePreCessTax(input.regime, input.ageGroup, taxableIncome);
   const incomeTaxBeforeCess = roundCurrency(taxBeforeCess.totalBeforeCess);
@@ -358,6 +366,7 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     employerPfDeduction: roundCurrency(employerPfDeduction),
     professionalTaxDeduction: roundCurrency(professionalTaxDeduction),
     pluxeeExemption: roundCurrency(pluxeeExemption),
+    hraExemption: roundCurrency(hraExemption),
     chapterVIADeductions: roundCurrency(chapterVIADeductions),
     totalExemptions: roundCurrency(totalExemptions),
     taxableIncome: roundCurrency(taxableIncome),
@@ -376,6 +385,7 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
 };
 
 export const compareTaxRegimes = (input: TaxComparisonInput): TaxComparisonResult => {
+  const hra = input.hraExemption ?? 0;
   const oldRegime = calculateTaxForRegime({
     fixedPay: input.fixedPay,
     variablePay: input.variablePay,
@@ -384,6 +394,7 @@ export const compareTaxRegimes = (input: TaxComparisonInput): TaxComparisonResul
     ageGroup: input.ageGroup,
     oldRegimeDeductions: input.oldRegimeDeductions,
     pluxeeExemption: input.pluxeeExemptions?.old ?? 0,
+    hraExemption: hra,
     regime: "old",
   });
   const newRegime = calculateTaxForRegime({
@@ -394,6 +405,7 @@ export const compareTaxRegimes = (input: TaxComparisonInput): TaxComparisonResul
     ageGroup: input.ageGroup,
     oldRegimeDeductions: input.oldRegimeDeductions,
     pluxeeExemption: input.pluxeeExemptions?.new ?? 0,
+    hraExemption: 0,
     regime: "new",
   });
   const bestRegime = oldRegime.totalTax <= newRegime.totalTax ? "old" : "new";

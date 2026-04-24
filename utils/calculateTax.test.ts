@@ -204,6 +204,20 @@ describe("computeHraExemption", () => {
     });
     expect(exempt).toBe(300_000);
   });
+
+  it("applies a lower 40% salary cap when switching from metro to non-metro (Rule 2A)", () => {
+    const inputBase = {
+      annualRentPaid: 400_000,
+      annualHraReceived: 300_000,
+      salaryForHra: 500_000,
+    };
+    const metro = computeHraExemption({ ...inputBase, isMetro: true });
+    const nonMetro = computeHraExemption({ ...inputBase, isMetro: false });
+    // Rent excess = 400k - 50k = 350k; metro cap 250k, non-metro cap 200k → binding caps differ.
+    expect(metro).toBe(250_000);
+    expect(nonMetro).toBe(200_000);
+    expect(metro).toBeGreaterThan(nonMetro);
+  });
 });
 
 describe("calculateTaxForRegime HRA", () => {

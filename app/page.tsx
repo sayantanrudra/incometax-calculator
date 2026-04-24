@@ -62,6 +62,8 @@ interface SalaryState {
   isDirectorEligible: boolean;
   advancedOpen: boolean;
   deductionsOpen: boolean;
+  /** HRA section 10(13A) inputs collapsed by default (same pattern as Chapter VI-A). */
+  hraOpen: boolean;
   flexiOpen: boolean;
   hraRentAnnual: string;
   hraReceivedAnnual: string;
@@ -128,6 +130,7 @@ const defaultState: SalaryState = {
   isDirectorEligible: false,
   advancedOpen: false,
   deductionsOpen: false,
+  hraOpen: false,
   flexiOpen: false,
   hraRentAnnual: "0",
   hraReceivedAnnual: "0",
@@ -1259,7 +1262,7 @@ export default function HomePage() {
 
             <SectionCard className={oldRegimeDisabled ? "opacity-55" : ""}>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
+                <div className="md:max-w-[min(100%,28rem)]">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
                     Section 10(13A)
                   </p>
@@ -1269,58 +1272,67 @@ export default function HomePage() {
                   <p className="mt-1 text-sm text-[color:var(--muted)]">
                     {oldRegimeDisabled
                       ? "HRA exemption applies in the old regime only — switch to Old to edit and include it in tax."
-                      : "Exemption is the least of: HRA received, rent paid minus 10% of annual fixed pay, and 50% (metro) or 40% (non-metro) of that pay. It reduces taxable income in the old regime only."}
+                      : "Rule 2A: exempt amount is the least of actual HRA, rent paid minus 10% of salary, and 50% (Delhi, Mumbai, Kolkata, Chennai) or 40% (other cities) of salary. Salary here means Basic + DA (forming part of retirement benefits) and certain commission; this tool uses annual fixed pay as that salary proxy."}
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setState((c) => ({ ...c, hraOpen: !c.hraOpen }))}
+                  className="shrink-0 rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
+                >
+                  {state.hraOpen ? "See less" : "See more"}
+                </button>
               </div>
-              <div className="mt-5 space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--nested-panel)] p-4 dark:border-slate-600/55 dark:bg-slate-950/35">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="text-xs font-medium text-[color:var(--muted)]">Computed exempt HRA (annual)</p>
-                  <p className="font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                    {formatCurrency(hraExemptAnnual)}
-                  </p>
+              {state.hraOpen ? (
+                <div className="mt-5 space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--nested-panel)] p-4 dark:border-slate-600/55 dark:bg-slate-950/35">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <p className="text-xs font-medium text-[color:var(--muted)]">Computed exempt HRA (annual)</p>
+                    <p className="font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      {formatCurrency(hraExemptAnnual)}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                      City type (Rule 2A)
+                    </p>
+                    <SleekPillToggle
+                      ariaLabel="Metro or non-metro for HRA"
+                      className="max-w-md"
+                      value={state.hraIsMetro ? "metro" : "nonmetro"}
+                      onChange={(v) => setState((c) => ({ ...c, hraIsMetro: v === "metro" }))}
+                      disabled={oldRegimeDisabled}
+                      options={[
+                        { id: "metro", label: "Metro" },
+                        { id: "nonmetro", label: "Non-Metro" },
+                      ]}
+                    />
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <InputField
+                      label="Annual rent paid"
+                      value={state.hraRentAnnual}
+                      helper=""
+                      error={undefined}
+                      disabled={oldRegimeDisabled}
+                      onChange={(e) => setState((c) => ({ ...c, hraRentAnnual: e.target.value }))}
+                    />
+                    <InputField
+                      label="Annual HRA received (from employer)"
+                      value={hraReceivedFieldValue}
+                      helper="Defaults to 25% of annual fixed pay until you change it."
+                      error={undefined}
+                      disabled={oldRegimeDisabled}
+                      onChange={(e) =>
+                        setState((c) => ({
+                          ...c,
+                          hraReceivedManual: true,
+                          hraReceivedAnnual: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--muted)]">
-                    City type
-                  </p>
-                  <SleekPillToggle
-                    ariaLabel="Metro or non-metro for HRA"
-                    className="max-w-md"
-                    value={state.hraIsMetro ? "metro" : "nonmetro"}
-                    onChange={(v) => setState((c) => ({ ...c, hraIsMetro: v === "metro" }))}
-                    disabled={oldRegimeDisabled}
-                    options={[
-                      { id: "metro", label: "Metro" },
-                      { id: "nonmetro", label: "Non-Metro" },
-                    ]}
-                  />
-                </div>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <InputField
-                    label="Annual rent paid"
-                    value={state.hraRentAnnual}
-                    helper=""
-                    error={undefined}
-                    disabled={oldRegimeDisabled}
-                    onChange={(e) => setState((c) => ({ ...c, hraRentAnnual: e.target.value }))}
-                  />
-                  <InputField
-                    label="Annual HRA received (from employer)"
-                    value={hraReceivedFieldValue}
-                    helper="Defaults to 25% of annual fixed pay until you change it."
-                    error={undefined}
-                    disabled={oldRegimeDisabled}
-                    onChange={(e) =>
-                      setState((c) => ({
-                        ...c,
-                        hraReceivedManual: true,
-                        hraReceivedAnnual: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-              </div>
+              ) : null}
             </SectionCard>
           </div>
 

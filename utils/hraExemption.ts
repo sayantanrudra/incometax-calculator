@@ -1,4 +1,10 @@
-/** Section 10(13A): exempt HRA is the least of actual HRA, rent minus 10% of salary, and 50% / 40% of salary (metro / non-metro). */
+/**
+ * Section 10(13A) read with Rule 2A of Income-tax Rules, 1962:
+ * exempt HRA is the least of (1) actual HRA received, (2) rent paid minus 10% of salary,
+ * (3) 50% of salary where accommodation is in Delhi, Mumbai, Kolkata, or Chennai, else 40%.
+ * Salary = Basic + DA (to the extent forming part of retirement benefits) + prescribed commission;
+ * callers pass an annual salary figure (e.g. fixed pay as Basic proxy).
+ */
 
 export interface HraExemptionInput {
   annualRentPaid: number;

@@ -43,6 +43,7 @@ type BenefitKey =
   | "telecom"
   | "wellness"
   | "books"
+  | "gadgets"
   | "driver";
 
 type VariablePayMode = "amount" | "percent";
@@ -59,7 +60,6 @@ interface SalaryState {
   otherPayrollAnnual: string;
   ageGroup: AgeGroup;
   preferredRegime: TaxRegime;
-  isDirectorEligible: boolean;
   advancedOpen: boolean;
   deductionsOpen: boolean;
   /** HRA section 10(13A) inputs collapsed by default (same pattern as Chapter VI-A). */
@@ -90,7 +90,6 @@ interface BenefitConfig {
   newAnnualMax: number;
   note: string;
   taxableInNew?: boolean;
-  directorOnly?: boolean;
 }
 
 interface MonthlyRow {
@@ -99,10 +98,13 @@ interface MonthlyRow {
   tax: number;
   netAfterTax: number;
   highlight: boolean;
+  postVariableCatchup: boolean;
 }
 
+type HraField = "hraRentAnnual" | "hraReceivedAnnual";
+
 type ValidationErrors = Partial<
-  Record<SalaryField | DeductionField | BenefitKey | PayrollField | "variableMonths", string>
+  Record<SalaryField | DeductionField | BenefitKey | PayrollField | "variableMonths" | HraField, string>
 >;
 
 const MAX_PAYROLL_LINE_ANNUAL = MAX_GROSS_INCOME;
@@ -114,6 +116,8 @@ const DEFAULT_EPF_ANNUAL_STRING = String(DEFAULT_EPF_ANNUAL);
 
 /** When the user has not overridden HRA received, assume this share of annual fixed pay (typical Basic proxy). */
 const HRA_RECEIVED_DEFAULT_OF_FIXED = 0.25;
+/** Default Basic salary proxy for HRA Rule 2A salary when the user has not overridden it. */
+const HRA_SALARY_BASIS_DEFAULT_OF_FIXED = 0.5;
 
 const defaultState: SalaryState = {
   fixedPay: "1000000",
@@ -127,7 +131,6 @@ const defaultState: SalaryState = {
   otherPayrollAnnual: "0",
   ageGroup: "below60",
   preferredRegime: "new",
-  isDirectorEligible: false,
   advancedOpen: false,
   deductionsOpen: false,
   hraOpen: false,
@@ -156,6 +159,7 @@ const defaultState: SalaryState = {
     telecom: "0",
     wellness: "0",
     books: "0",
+    gadgets: "0",
     driver: "0",
   },
 };
@@ -194,7 +198,7 @@ const deductionConfigs: DeductionConfig[] = [
 
 const benefitConfigs: BenefitConfig[] = [
   { key: "fuel", label: "Fuel", oldAnnualMax: 180_000, newAnnualMax: 180_000, note: "Max ₹1,80,000 / year" },
-  { key: "meal", label: "Meal", oldAnnualMax: 120_000, newAnnualMax: 120_000, note: "Max ₹1,20,000 / year" },
+  { key: "meal", label: "Meal", oldAnnualMax: 180_000, newAnnualMax: 180_000, note: "Max ₹1,80,000 / year" },
   {
     key: "officeWear",
     label: "Office wear",
@@ -213,13 +217,13 @@ const benefitConfigs: BenefitConfig[] = [
     note: "Max ₹60,000 / year",
     taxableInNew: true,
   },
+  { key: "gadgets", label: "Gadgets & Equipment", oldAnnualMax: 60_000, newAnnualMax: 60_000, note: "Max ₹60,000 / year" },
   {
     key: "driver",
-    label: "Driver",
+    label: "Driver Salary",
     oldAnnualMax: 300_000,
     newAnnualMax: 300_000,
-    note: "Max ₹3,00,000 / year",
-    directorOnly: true,
+    note: "Max ₹25,000 / month (₹3,00,000 / year) · company-policy dependent",
   },
 ];
 
@@ -237,12 +241,8 @@ const numericValue = (value: string) => {
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-const getBenefitCap = (benefit: BenefitConfig, regime: TaxRegime, driverBenefitOptIn: boolean) => {
-  if (benefit.directorOnly && !driverBenefitOptIn) {
-    return 0;
-  }
-  return regime === "old" ? benefit.oldAnnualMax : benefit.newAnnualMax;
-};
+const getBenefitCap = (benefit: BenefitConfig, regime: TaxRegime) =>
+  regime === "old" ? benefit.oldAnnualMax : benefit.newAnnualMax;
 
 const deriveVariablePayAnnual = (fixedPay: number, rawInput: number, mode: VariablePayMode) => {
   if (mode === "amount") {
@@ -435,7 +435,7 @@ function MetricTile({
       }`}
     >
       <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">{label}</p>
-      <p className="mt-2 font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)] sm:text-2xl">
+      <p className="mt-2 font-display text-xl text-[color:var(--navy)] transition-all duration-200 dark:text-[color:var(--foreground)] sm:text-2xl">
         {value}
       </p>
       {caption ? <p className="mt-2 text-xs leading-relaxed text-[color:var(--muted)]">{caption}</p> : null}
@@ -447,16 +447,14 @@ function BenefitField({
   benefit,
   regime,
   value,
-  isDirectorEligible,
   onChange,
 }: {
   benefit: BenefitConfig;
   regime: TaxRegime;
   value: string;
-  isDirectorEligible: boolean;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
-  const cap = getBenefitCap(benefit, regime, isDirectorEligible);
+  const cap = getBenefitCap(benefit, regime);
   const disabled = cap === 0;
 
   return (
@@ -475,9 +473,7 @@ function BenefitField({
         className="w-full rounded-xl border border-[color:var(--input-border)] bg-[color:var(--input-bg)] px-3 py-2.5 text-sm text-[color:var(--navy)] outline-none transition duration-200 focus:border-[color:var(--accent-violet)] focus:ring-2 focus:ring-[color:var(--accent-violet)]/15 disabled:cursor-not-allowed disabled:bg-slate-100/80 dark:text-[color:var(--foreground)] dark:disabled:bg-slate-800/80"
       />
       <span className={`text-xs ${disabled ? "text-slate-400" : "text-[color:var(--muted)]"}`}>
-        {cap > 0
-          ? `${benefit.note}${benefit.directorOnly ? " · Enable in Advanced if your employer offers this benefit." : ""}`
-          : "Not applicable in this setup."}
+        {cap > 0 ? benefit.note : "Not applicable in this regime."}
       </span>
     </label>
   );
@@ -546,7 +542,7 @@ function BreakdownSection({
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[color:var(--muted)]">
               Income tax (FY view)
             </p>
-            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60">
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60 p-[15px]">
               <Row label="Gross income (CTC)" value={formatCurrency(result.totalCtc)} />
               <Row label="Employer PF (exempt component)" value={`− ${formatCurrency(result.employerPfDeduction)}`} />
               <Row
@@ -590,7 +586,7 @@ function BreakdownSection({
               Employer PF and Pluxee/flexi are CTC routed to ER PF and benefits (not bank salary). We subtract them
               after tax along with payslip lines so in-hand is cash retained from the package.
             </p>
-            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60">
+            <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60 p-[15px]">
               <Row label="Net after income tax" value={formatCurrency(annualAfterTaxBeforePayroll)} />
               <Row
                 label="Employer PF (ER share, from CTC)"
@@ -669,7 +665,7 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
       className={`flex items-center justify-between gap-4 py-2.5 ${strong ? "font-semibold text-[color:var(--navy)] dark:text-[color:var(--foreground)]" : "text-slate-600 dark:text-slate-400"}`}
     >
       <span>{label}</span>
-      <span className="tabular-nums">{value}</span>
+      <span className="tabular-nums transition-all duration-200">{value}</span>
     </div>
   );
 }
@@ -685,13 +681,13 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
           <h2 className="mt-1 font-display text-2xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
             Cashflow view
           </h2>
-          {/* <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--muted)]">
+          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--muted)]">
             <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-              Real per-month TDS:
+              Re-projected monthly TDS:
             </span>{" "}
-            each month deducts (annual tax projected so far − TDS already paid) ÷ months remaining. Variable-month rows
-            include the gross variable half and the TDS catch-up that fires at re-projection.
-          </p> */}
+            each month deducts (projected annual tax to date − TDS already paid) ÷ months remaining. Variable-month rows
+            include both the variable gross and any catch-up TDS after re-projection.
+          </p>
         </div>
         <button
           type="button"
@@ -755,6 +751,11 @@ export default function HomePage() {
     [fixedPay],
   );
 
+  const salaryForHra = useMemo(
+    () => clamp(Math.round(fixedPay * HRA_SALARY_BASIS_DEFAULT_OF_FIXED), 0, MAX_GROSS_INCOME),
+    [fixedPay],
+  );
+
   const hraExemptAnnual = useMemo(() => {
     const annualHraReceived = state.hraReceivedManual
       ? numericValue(state.hraReceivedAnnual)
@@ -762,12 +763,12 @@ export default function HomePage() {
     return computeHraExemption({
       annualRentPaid: numericValue(state.hraRentAnnual),
       annualHraReceived,
-      salaryForHra: fixedPay,
+      salaryForHra,
       isMetro: state.hraIsMetro,
     });
   }, [
     defaultHraReceivedAnnual,
-    fixedPay,
+    salaryForHra,
     state.hraIsMetro,
     state.hraReceivedAnnual,
     state.hraReceivedManual,
@@ -816,10 +817,19 @@ export default function HomePage() {
     });
     benefitConfigs.forEach((benefit) => {
       const raw = numericValue(state.benefits[benefit.key]);
-      const cap = getBenefitCap(benefit, state.preferredRegime, state.isDirectorEligible);
+      const cap = getBenefitCap(benefit, state.preferredRegime);
       if (raw < 0) nextErrors[benefit.key] = "Cannot be negative.";
       else if (raw > cap && cap > 0) nextErrors[benefit.key] = `Max ${formatCurrency(cap)}.`;
     });
+
+    const validateHraAnnualLine = (field: HraField, value: number) => {
+      if (value < 0) nextErrors[field] = "Cannot be negative.";
+      else if (value > MAX_GROSS_INCOME) nextErrors[field] = "Value too high.";
+    };
+    validateHraAnnualLine("hraRentAnnual", numericValue(state.hraRentAnnual));
+    if (state.hraReceivedManual) {
+      validateHraAnnualLine("hraReceivedAnnual", numericValue(state.hraReceivedAnnual));
+    }
     return nextErrors;
   }, [
     employeePfAnnual,
@@ -830,7 +840,9 @@ export default function HomePage() {
     professionalTax,
     state.benefits,
     state.deductions,
-    state.isDirectorEligible,
+    state.hraReceivedAnnual,
+    state.hraReceivedManual,
+    state.hraRentAnnual,
     state.preferredRegime,
     state.variablePayMode,
     variableMonthCount,
@@ -843,14 +855,14 @@ export default function HomePage() {
       (["old", "new"] as TaxRegime[]).reduce<Record<TaxRegime, number>>(
         (acc, regime) => {
           acc[regime] = benefitConfigs.reduce((sum, benefit) => {
-            const cap = getBenefitCap(benefit, regime, state.isDirectorEligible);
+            const cap = getBenefitCap(benefit, regime);
             return sum + clamp(numericValue(state.benefits[benefit.key]), 0, cap);
           }, 0);
           return acc;
         },
         { old: 0, new: 0 },
       ),
-    [state.benefits, state.isDirectorEligible],
+    [state.benefits],
   );
 
   const baseInput = {
@@ -1003,16 +1015,19 @@ export default function HomePage() {
             <div className="flex shrink-0 flex-col items-stretch gap-3 sm:items-end">
               <ThemeToggle />
               <div
-                className={`max-w-md rounded-2xl border px-4 py-3 text-sm leading-snug shadow-sm ${
+                className={`max-w-md rounded-2xl border px-4 py-3 text-sm leading-snug shadow-sm transition-all duration-200 ${
                   regimeSavingsVersusOther.tie
-                    ? "border-slate-200/80 bg-slate-50/80 text-[color:var(--muted)] dark:border-slate-600/60 dark:bg-slate-900/40"
-                    : "border-teal-200/60 bg-gradient-to-br from-teal-50/90 to-violet-50/50 text-[color:var(--navy)] dark:border-teal-800/50 dark:from-teal-950/50 dark:to-violet-950/40 dark:text-[color:var(--foreground)]"
+                    ? "surface-info text-sky-900 dark:text-sky-200"
+                    : "surface-success text-emerald-900 dark:text-emerald-100"
                 }`}
               >
                 {regimeSavingsVersusOther.tie ? (
                   <span>Old and new regime income tax is the same on these inputs.</span>
                 ) : (
                   <span>
+                    <span className="mb-1.5 inline-block rounded-full border border-emerald-300/70 bg-emerald-100/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:border-emerald-700/70 dark:bg-emerald-900/60 dark:text-emerald-100">
+                      Savings
+                    </span>{" "}
                     You save{" "}
                     <span className="font-semibold tabular-nums">{formatCurrency(regimeSavingsVersusOther.savings)}</span>{" "}
                     per year by choosing the <span className="font-semibold">{regimeSavingsVersusOther.betterName}</span>{" "}
@@ -1195,23 +1210,6 @@ export default function HomePage() {
                         />
                       </div>
                     </div>
-                    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-600/60 dark:bg-slate-900/30">
-                      <input
-                        type="checkbox"
-                        checked={state.isDirectorEligible}
-                        onChange={(e) => setState((c) => ({ ...c, isDirectorEligible: e.target.checked }))}
-                        className="mt-1 h-4 w-4 rounded border-slate-300 text-[color:var(--accent-violet)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-violet)]/30 focus-visible:ring-offset-1 dark:border-slate-500"
-                      />
-                      <span>
-                        <span className="block text-sm font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                          Driver / chauffeur benefit (company policy)
-                        </span>
-                        <span className="text-xs text-[color:var(--muted)]">
-                          Turn on if your employer offers the tax-exempt driver allowance so you can enter it under
-                          flexi.
-                        </span>
-                      </span>
-                    </label>
                   </div>
                 ) : null}
               </div>
@@ -1272,7 +1270,7 @@ export default function HomePage() {
                   <p className="mt-1 text-sm text-[color:var(--muted)]">
                     {oldRegimeDisabled
                       ? "HRA exemption applies in the old regime only — switch to Old to edit and include it in tax."
-                      : "Rule 2A: exempt amount is the least of actual HRA, rent paid minus 10% of salary, and 50% (Delhi, Mumbai, Kolkata, Chennai) or 40% (other cities) of salary. Salary here means Basic + DA (forming part of retirement benefits) and certain commission; this tool uses annual fixed pay as that salary proxy."}
+                      : ""}
                   </p>
                 </div>
                 <button
@@ -1312,7 +1310,7 @@ export default function HomePage() {
                       label="Annual rent paid"
                       value={state.hraRentAnnual}
                       helper=""
-                      error={undefined}
+                      error={errors.hraRentAnnual}
                       disabled={oldRegimeDisabled}
                       onChange={(e) => setState((c) => ({ ...c, hraRentAnnual: e.target.value }))}
                     />
@@ -1320,7 +1318,7 @@ export default function HomePage() {
                       label="Annual HRA received (from employer)"
                       value={hraReceivedFieldValue}
                       helper="Defaults to 25% of annual fixed pay until you change it."
-                      error={undefined}
+                      error={state.hraReceivedManual ? errors.hraReceivedAnnual : undefined}
                       disabled={oldRegimeDisabled}
                       onChange={(e) =>
                         setState((c) => ({
@@ -1367,7 +1365,7 @@ export default function HomePage() {
                   />
                 </div>
 
-                <div className="border-t border-slate-200/90 pt-4 text-sm leading-relaxed text-[color:var(--muted)] dark:border-slate-600/50">
+                <div className="surface-info mt-1 rounded-xl border px-3 py-3 text-sm leading-relaxed text-sky-900 dark:text-sky-200">
                   <p>
                     <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
                       Old
@@ -1393,7 +1391,7 @@ export default function HomePage() {
                     )}
                   </p>
                   {flexiFlipsBestRegime ? (
-                    <p className="mt-2 text-xs text-[color:var(--muted)]">
+                    <p className="surface-warning mt-2 rounded-lg border px-2.5 py-2 text-xs text-amber-900 dark:text-amber-100">
                       Best regime without flexi:{" "}
                       <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
                         {comparisonWithoutBenefits.bestRegime === "old" ? "Old" : "New"}
@@ -1448,6 +1446,16 @@ export default function HomePage() {
                 </details>
               </div>
 
+              <details className="surface-info mt-4 rounded-xl border px-3 py-2.5 text-xs text-sky-900 dark:text-sky-200">
+                <summary className="cursor-pointer list-none font-semibold uppercase tracking-wide marker:content-none [&::-webkit-details-marker]:hidden">
+                  Assumptions
+                </summary>
+                <div className="mt-2 space-y-1.5 leading-relaxed">
+                  <p>HRA salary basis uses 50% of annual fixed compensation as a proxy.</p>
+                  <p>Driver Salary exemption is company-policy dependent and assumed eligible when entered.</p>
+                  <p>Variable payout months can trigger TDS catch-up in following months.</p>
+                </div>
+              </details>
               <p className="mt-4 text-xs text-[color:var(--muted)]">
                 Taxable income, exemptions, and effective rate: see breakdown below.
               </p>
@@ -1459,7 +1467,9 @@ export default function HomePage() {
                   <h2 className="font-display text-xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
                     Flexi benefits (Pluxee)
                   </h2>
-                  <p className="mt-1 text-sm text-[color:var(--muted)]">Annual exempt amounts.</p>
+                  <p className="mt-1 text-sm text-[color:var(--muted)]">
+                    Annual exempt amounts. Driver Salary exemption is company-policy dependent.
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -1477,7 +1487,6 @@ export default function HomePage() {
                         benefit={benefit}
                         regime={state.preferredRegime}
                         value={state.benefits[benefit.key]}
-                        isDirectorEligible={state.isDirectorEligible}
                         onChange={handleBenefitChange(benefit.key)}
                       />
                       {errors[benefit.key] ? <p className="mt-1 text-xs text-red-600">{errors[benefit.key]}</p> : null}

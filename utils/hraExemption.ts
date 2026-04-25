@@ -3,7 +3,7 @@
  * exempt HRA is the least of (1) actual HRA received, (2) rent paid minus 10% of salary,
  * (3) 50% of salary where accommodation is in Delhi, Mumbai, Kolkata, or Chennai, else 40%.
  * Salary = Basic + DA (to the extent forming part of retirement benefits) + prescribed commission;
- * callers pass an annual salary figure (e.g. fixed pay as Basic proxy).
+ * callers pass that annual figure (e.g. from a dedicated UI field or fixed pay as a proxy).
  */
 
 export interface HraExemptionInput {

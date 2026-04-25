@@ -24,7 +24,7 @@ describe("buildMonthlyCashflow", () => {
     expect(sep?.gross).toBeGreaterThan(fixed / 12);
   });
 
-  it("tax in a variable month exceeds a prior base month (TDS responds to variable)", () => {
+  it("tax in a variable month exceeds a prior base month (TDS reprojects on variable income)", () => {
     const mask = defaultVariableMonthMask();
     const rows = buildMonthlyCashflow({
       fixedPayAnnual: 1_000_000,
@@ -36,5 +36,20 @@ describe("buildMonthlyCashflow", () => {
     const aug = rows.find((r) => r.month === "Aug");
     const sep = rows.find((r) => r.month.startsWith("Sep"));
     expect(sep!.tax).toBeGreaterThan(aug!.tax);
+  });
+
+  it("post-variable base months stay tighter than pre-variable months due to catch-up TDS", () => {
+    const mask = defaultVariableMonthMask();
+    const rows = buildMonthlyCashflow({
+      fixedPayAnnual: 1_000_000,
+      variablePayAnnual: 200_000,
+      variableMonthSelected: mask,
+      totalCtc: 1_200_000,
+      totalTaxAnnual: 180_000,
+    });
+    const aug = rows.find((r) => r.month === "Aug");
+    const oct = rows.find((r) => r.month === "Oct");
+    expect(oct!.tax).toBeGreaterThan(aug!.tax);
+    expect(oct!.netAfterTax).toBeLessThan(aug!.netAfterTax);
   });
 });

@@ -25,9 +25,9 @@ India **FY 2024-25** salary tax **estimator** — old vs new regime, Chapter VI-
 | 🎂 | **Age** | Old-regime slabs: &lt;60, 60–80, 80+ |
 | 🏠 | **HRA** | Section 10(13A) style exemption (old regime); metro vs non-metro — `utils/hraExemption.ts` |
 | 📑 | **Chapter VI-A** | 80C, 80CCD(1B), 80D, 80DD, 80E, 80EEB, 80G, 80GGA, 80U, 80TTA/80TTB (age-gated in UI) |
-| 🎫 | **Flexi (Pluxee-style)** | Fuel, meal, office wear, telecom, wellness, books, driver — annual caps; new regime handling for office wear & books in UI; director driver when CTC ≥ ₹80L |
+| 🎫 | **Flexi (Pluxee-style)** | Fuel, meal, office wear, telecom, wellness, books, gadgets & equipment, driver salary — annual caps; new regime handling for office wear & books in UI; driver is company-policy dependent |
 | 📊 | **Outputs** | Standard deduction, exemptions, taxable income, tax, effective rate |
-| 📅 | **Cashflow** | Simple monthly view — variable in Sep & Mar (`utils/monthlyCashflow.ts`) |
+| 📅 | **Cashflow** | Monthly TDS re-projection view — variable payouts trigger catch-up that can reduce later in-hand (`utils/monthlyCashflow.ts`) |
 
 ---
 

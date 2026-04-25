@@ -9,6 +9,7 @@ export interface MonthlyCashflowRow {
   tax: number;
   netAfterTax: number;
   highlight: boolean;
+  postVariableCatchup: boolean;
 }
 
 export interface BuildMonthlyCashflowParams {
@@ -24,17 +25,12 @@ const countSelected = (mask: boolean[]) => mask.filter(Boolean).length;
 
 const roundCurrency = (value: number) => Math.round(value);
 
-/**
- * Blends (a) even time-based accrual of annual tax and (b) cumulative gross share of the year.
- * Monthly TDS = increase in that blended liability curve, so variable months pull more withholding
- * while later “base” months can stay a bit higher than pure gross-share — closer to employer re-projection behaviour.
- * Totals still match `totalTaxAnnual` (last month absorbs rounding).
- */
-const TDS_TIME_BLEND = 0.26;
+const FY_MONTHS = FY_MONTH_LABELS.length;
 
 /**
  * Spreads variable pay across selected FY months (equal split).
- * Monthly tax is derived from a cumulative liability curve (see `TDS_TIME_BLEND`), not gross ÷ CTC alone.
+ * Monthly tax follows a payroll-style re-projection:
+ * projected annual tax to date - tax already deducted, then spread across months remaining.
  */
 export const buildMonthlyCashflow = (params: BuildMonthlyCashflowParams): MonthlyCashflowRow[] => {
   const { fixedPayAnnual, variablePayAnnual, variableMonthSelected, totalCtc, totalTaxAnnual } = params;
@@ -57,36 +53,49 @@ export const buildMonthlyCashflow = (params: BuildMonthlyCashflowParams): Monthl
       tax: 0,
       netAfterTax: gross,
       highlight,
+      postVariableCatchup: false,
     }));
   }
 
-  let cumGross = 0;
-  let prevLiability = 0;
+  let cumulativeGross = 0;
+  let taxDeductedSoFar = 0;
   const rawTaxes: number[] = [];
 
-  for (let i = 0; i < 12; i++) {
-    cumGross += grosses[i].gross;
-    const monthIndex = i + 1;
-    const liability =
-      totalTaxAnnual *
-      (TDS_TIME_BLEND * (monthIndex / 12) + (1 - TDS_TIME_BLEND) * (cumGross / totalCtc));
-    rawTaxes.push(Math.max(0, liability - prevLiability));
-    prevLiability = liability;
+  for (let i = 0; i < FY_MONTHS; i++) {
+    const monthNumber = i + 1;
+    const monthsRemaining = FY_MONTHS - i;
+    cumulativeGross += grosses[i].gross;
+    const projectedAnnualGross = (cumulativeGross / monthNumber) * FY_MONTHS;
+    const projectedAnnualTax =
+      totalTaxAnnual * (projectedAnnualGross / totalCtc);
+    const taxDueByProjection = Math.max(0, projectedAnnualTax - taxDeductedSoFar);
+    const monthlyTds = taxDueByProjection / monthsRemaining;
+    rawTaxes.push(Math.max(0, monthlyTds));
+    taxDeductedSoFar += monthlyTds;
   }
 
   const taxesRounded = rawTaxes.map((t) => roundCurrency(t));
   const sumRounded = taxesRounded.reduce((a, b) => a + b, 0);
   const drift = roundCurrency(totalTaxAnnual) - sumRounded;
-  taxesRounded[11] += drift;
+  taxesRounded[FY_MONTHS - 1] += drift;
+  const firstVariableIndex = grosses.findIndex((month) => month.highlight);
+  const preVariableBaseTax = firstVariableIndex > 0 ? taxesRounded[firstVariableIndex - 1] : null;
 
   return grosses.map(({ label, highlight, gross }, i) => {
     const tax = taxesRounded[i];
+    const postVariableCatchup =
+      firstVariableIndex >= 0 &&
+      preVariableBaseTax !== null &&
+      i > firstVariableIndex &&
+      !highlight &&
+      tax > preVariableBaseTax;
     return {
       month: highlight ? `${label} · variable` : label,
       gross,
       tax,
       netAfterTax: Math.max(0, gross - tax),
       highlight,
+      postVariableCatchup,
     };
   });
 };

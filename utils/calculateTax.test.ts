@@ -218,6 +218,36 @@ describe("computeHraExemption", () => {
     expect(nonMetro).toBe(200_000);
     expect(metro).toBeGreaterThan(nonMetro);
   });
+
+  /** Plan dry-runs: rent-excess binds (metro toggle irrelevant); cap binds (metro > non-metro). */
+  it("dry-run A: rent paid minus 10% salary binds so metro and non-metro match", () => {
+    const input = {
+      annualRentPaid: 240_000,
+      annualHraReceived: 250_000,
+      salaryForHra: 1_000_000,
+    };
+    expect(computeHraExemption({ ...input, isMetro: true })).toBe(140_000);
+    expect(computeHraExemption({ ...input, isMetro: false })).toBe(140_000);
+  });
+
+  it("dry-run B: 40–50% salary cap binds so metro exemption exceeds non-metro", () => {
+    const input = {
+      annualRentPaid: 650_000,
+      annualHraReceived: 480_000,
+      salaryForHra: 1_000_000,
+    };
+    expect(computeHraExemption({ ...input, isMetro: true })).toBe(480_000);
+    expect(computeHraExemption({ ...input, isMetro: false })).toBe(400_000);
+  });
+
+  it("dry-run C: lower Rule 2A salary (e.g. Basic+DA) lowers exemption vs inflated proxy salary", () => {
+    const shared = { annualRentPaid: 650_000, annualHraReceived: 480_000, isMetro: true };
+    const inflatedProxy = computeHraExemption({ ...shared, salaryForHra: 1_000_000 });
+    const accurateBasis = computeHraExemption({ ...shared, salaryForHra: 600_000 });
+    expect(inflatedProxy).toBe(480_000);
+    expect(accurateBasis).toBe(300_000);
+    expect(accurateBasis).toBeLessThan(inflatedProxy);
+  });
 });
 
 describe("calculateTaxForRegime HRA", () => {
@@ -239,5 +269,24 @@ describe("calculateTaxForRegime HRA", () => {
     expect(withHra.taxableIncome).toBe(without.taxableIncome - 100_000);
     expect(newWithHra.hraExemption).toBe(0);
     expect(newWithHra.taxableIncome).toBeGreaterThan(withHra.taxableIncome);
+  });
+
+  it("old-regime taxable income is higher when HRA is computed from a lower Rule 2A salary basis", () => {
+    const shared = { annualRentPaid: 650_000, annualHraReceived: 480_000, isMetro: true };
+    const hraFromInflatedSalary = computeHraExemption({ ...shared, salaryForHra: 1_000_000 });
+    const hraFromAccurateSalary = computeHraExemption({ ...shared, salaryForHra: 600_000 });
+    const base = {
+      fixedPay: 1_000_000,
+      variablePay: 0,
+      employerPf: 0,
+      professionalTax: 0,
+      ageGroup: "below60" as const,
+      pluxeeExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+      regime: "old" as const,
+    };
+    const withInflatedHra = calculateTaxForRegime({ ...base, hraExemption: hraFromInflatedSalary });
+    const withAccurateHra = calculateTaxForRegime({ ...base, hraExemption: hraFromAccurateSalary });
+    expect(withAccurateHra.taxableIncome).toBeGreaterThan(withInflatedHra.taxableIncome);
   });
 });

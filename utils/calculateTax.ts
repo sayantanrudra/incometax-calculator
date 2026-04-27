@@ -52,7 +52,6 @@ export interface TaxComparisonInput {
 export interface TaxComputation {
   regime: TaxRegime;
   totalCtc: number;
-  grossIncome: number;
   standardDeduction: number;
   employerPfDeduction: number;
   professionalTaxDeduction: number;
@@ -71,7 +70,6 @@ export interface TaxComputation {
   cess: number;
   totalTax: number;
   monthlyNetInHand: number;
-  effectiveTaxRate: number;
   breakdown: TaxBreakdownItem[];
 }
 
@@ -108,8 +106,9 @@ interface PreCessTaxResult {
   totalBeforeCess: number;
 }
 
-/** FY 2024-25 (AY 2025-26): old regime ₹50k; new regime ₹75k (Finance (No. 2) Act, 2024). */
-export const OLD_STANDARD_DEDUCTION = 50_000;
+/** Old regime ₹50k standard deduction (Section 16); new regime uses `NEW_STANDARD_DEDUCTION`. */
+const OLD_STANDARD_DEDUCTION = 50_000;
+/** Salaried / pension standard deduction under Section 16 (new regime). */
 export const NEW_STANDARD_DEDUCTION = 75_000;
 export const MAX_GROSS_INCOME = 100_000_000;
 export const MAX_80C_DEDUCTION = 150_000;
@@ -123,8 +122,10 @@ export const MAX_80TTA_DEDUCTION = 10_000;
 export const MAX_80TTB_DEDUCTION = 50_000;
 export const MAX_PROFESSIONAL_TAX = 50_000;
 export const MAX_EMPLOYER_PF = 500_000;
-export const HEALTH_EDUCATION_CESS_RATE = 0.04;
 
+const HEALTH_EDUCATION_CESS_RATE = 0.04;
+
+/** Default tax rates for individuals / HUFs (old regime); age bands per Act — unchanged under FA 2025 for core slabs. */
 const OLD_REGIME_SLABS: Record<AgeGroup, TaxSlab[]> = {
   below60: [
     { lowerLimit: 0, upperLimit: 250_000, rate: 0, label: "Up to Rs 2.5L" },
@@ -145,19 +146,24 @@ const OLD_REGIME_SLABS: Record<AgeGroup, TaxSlab[]> = {
   ],
 };
 
-/** Section 115BAC slabs as amended by Finance Act 2024 (FY 2024-25 / AY 2025-26): 3–7L @ 5%, 7–10L @ 10%, etc. */
+/**
+ * Section 115BAC slabs as amended by Finance Act 2025 (FY 2025-26 / AY 2026-27 onward):
+ * nil up to ₹4L, then 5% / 10% / 15% / 20% / 25% / 30% bands.
+ */
 const NEW_REGIME_SLABS: TaxSlab[] = [
-  { lowerLimit: 0, upperLimit: 300_000, rate: 0, label: "Up to Rs 3L" },
-  { lowerLimit: 300_000, upperLimit: 700_000, rate: 0.05, label: "Rs 3L - Rs 7L" },
-  { lowerLimit: 700_000, upperLimit: 1_000_000, rate: 0.1, label: "Rs 7L - Rs 10L" },
-  { lowerLimit: 1_000_000, upperLimit: 1_200_000, rate: 0.15, label: "Rs 10L - Rs 12L" },
-  { lowerLimit: 1_200_000, upperLimit: 1_500_000, rate: 0.2, label: "Rs 12L - Rs 15L" },
-  { lowerLimit: 1_500_000, upperLimit: null, rate: 0.3, label: "Above Rs 15L" },
+  { lowerLimit: 0, upperLimit: 400_000, rate: 0, label: "Up to Rs 4L" },
+  { lowerLimit: 400_000, upperLimit: 800_000, rate: 0.05, label: "Rs 4L - Rs 8L" },
+  { lowerLimit: 800_000, upperLimit: 1_200_000, rate: 0.1, label: "Rs 8L - Rs 12L" },
+  { lowerLimit: 1_200_000, upperLimit: 1_600_000, rate: 0.15, label: "Rs 12L - Rs 16L" },
+  { lowerLimit: 1_600_000, upperLimit: 2_000_000, rate: 0.2, label: "Rs 16L - Rs 20L" },
+  { lowerLimit: 2_000_000, upperLimit: 2_400_000, rate: 0.25, label: "Rs 20L - Rs 24L" },
+  { lowerLimit: 2_400_000, upperLimit: null, rate: 0.3, label: "Above Rs 24L" },
 ];
 
 const REBATE_RULES: Record<TaxRegime, RebateRule> = {
   old: { threshold: 500_000, maxRebate: 12_500 },
-  new: { threshold: 700_000, maxRebate: 25_000 },
+  /** Section 87A: resident new-regime rebate up to ₹60k when taxable income does not exceed ₹12L (FA 2025). */
+  new: { threshold: 1_200_000, maxRebate: 60_000 },
 };
 
 const OLD_SURCHARGE_BRACKETS: SurchargeBracket[] = [
@@ -356,12 +362,10 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
   const totalTax = roundCurrency(incomeTaxBeforeCess + cess);
   const breakdown = calculateBreakdown(taxableIncome, getSlabsForRegime(input.regime, input.ageGroup));
   const monthlyNetInHand = Math.max(0, totalCtc - totalTax) / 12;
-  const effectiveTaxRate = totalCtc > 0 ? (totalTax / totalCtc) * 100 : 0;
 
   return {
     regime: input.regime,
     totalCtc: roundCurrency(totalCtc),
-    grossIncome: roundCurrency(totalCtc),
     standardDeduction: roundCurrency(standardDeduction),
     employerPfDeduction: roundCurrency(employerPfDeduction),
     professionalTaxDeduction: roundCurrency(professionalTaxDeduction),
@@ -379,7 +383,6 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     cess,
     totalTax,
     monthlyNetInHand: roundCurrency(monthlyNetInHand),
-    effectiveTaxRate,
     breakdown,
   };
 };

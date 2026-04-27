@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  HEALTH_EDUCATION_CESS_RATE,
-  NEW_STANDARD_DEDUCTION,
-  calculateTaxForRegime,
-  compareTaxRegimes,
-} from "./calculateTax";
+import { NEW_STANDARD_DEDUCTION, calculateTaxForRegime, compareTaxRegimes } from "./calculateTax";
 import { computeHraExemption } from "./hraExemption";
 
 const emptyOldDeductions = {
@@ -22,7 +17,7 @@ const emptyOldDeductions = {
 };
 
 describe("calculateTaxForRegime", () => {
-  it("applies cess as 4% of pre-cess tax for a mid-bracket new-regime salary", () => {
+  it("applies Section 87A rebate in new regime so taxable ₹10L pays no tax (FA 2025 slabs)", () => {
     const totalCtc = 1_075_000;
     const result = calculateTaxForRegime({
       fixedPay: totalCtc,
@@ -38,12 +33,33 @@ describe("calculateTaxForRegime", () => {
 
     expect(result.standardDeduction).toBe(75_000);
     expect(result.taxableIncome).toBe(1_000_000);
-    expect(result.slabTax).toBe(50_000);
-    expect(result.rebate87A).toBe(0);
+    expect(result.slabTax).toBe(40_000);
+    expect(result.rebate87A).toBe(40_000);
     expect(result.surcharge).toBe(0);
-    const preCess = result.totalTax - result.cess;
-    expect(result.cess).toBe(Math.round(preCess * HEALTH_EDUCATION_CESS_RATE));
-    expect(result.totalTax).toBe(52_000);
+    expect(result.cess).toBe(0);
+    expect(result.totalTax).toBe(0);
+  });
+
+  it("computes old-regime slab tax for taxable ₹10L (no rebate, no surcharge)", () => {
+    const totalCtc = 1_000_000 + 50_000;
+    const result = calculateTaxForRegime({
+      fixedPay: totalCtc,
+      variablePay: 0,
+      employerPf: 0,
+      professionalTax: 0,
+      ageGroup: "below60",
+      regime: "old",
+      pluxeeExemption: 0,
+      hraExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+    });
+
+    expect(result.taxableIncome).toBe(1_000_000);
+    expect(result.slabTax).toBe(112_500);
+    expect(result.rebate87A).toBe(0);
+    expect(result.incomeTaxBeforeCess).toBe(112_500);
+    expect(result.cess).toBe(4_500);
+    expect(result.totalTax).toBe(117_000);
   });
 
   it("zeros tax at old-regime rebate threshold (taxable ₹5L)", () => {
@@ -66,7 +82,7 @@ describe("calculateTaxForRegime", () => {
     expect(result.totalTax).toBe(0);
   });
 
-  it("applies new-regime rebate so taxable ₹7L pays no tax", () => {
+  it("zeros new-regime tax at taxable ₹7L (rebate u/s 87A within ₹12L threshold)", () => {
     const totalCtc = 775_000;
     const result = calculateTaxForRegime({
       fixedPay: totalCtc,
@@ -84,7 +100,27 @@ describe("calculateTaxForRegime", () => {
     expect(result.totalTax).toBe(0);
   });
 
-  /** FY 2024-25 new-regime slabs (Budget 2024): 3–7L @ 5%, 7–10L @ 10%, etc. — regression for Form 16 alignment. */
+  it("zeros new-regime tax at taxable ₹12L (full ₹60k rebate on slab tax)", () => {
+    const totalCtc = 1_200_000 + NEW_STANDARD_DEDUCTION;
+    const result = calculateTaxForRegime({
+      fixedPay: totalCtc,
+      variablePay: 0,
+      employerPf: 0,
+      professionalTax: 0,
+      ageGroup: "below60",
+      regime: "new",
+      pluxeeExemption: 0,
+      hraExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+    });
+
+    expect(result.taxableIncome).toBe(1_200_000);
+    expect(result.slabTax).toBe(60_000);
+    expect(result.rebate87A).toBe(60_000);
+    expect(result.totalTax).toBe(0);
+  });
+
+  /** Finance Act 2025 new-regime slabs — high income, no rebate, no surcharge. */
   it("matches expected new-regime tax for taxable ₹14,64,399 (no rebate, no surcharge)", () => {
     const taxable = 1_464_399;
     const totalCtc = taxable + NEW_STANDARD_DEDUCTION;
@@ -101,12 +137,12 @@ describe("calculateTaxForRegime", () => {
     });
 
     expect(result.taxableIncome).toBe(taxable);
-    expect(result.slabTax).toBe(132_880);
+    expect(result.slabTax).toBe(99_660);
     expect(result.rebate87A).toBe(0);
     expect(result.surcharge).toBe(0);
-    expect(result.incomeTaxBeforeCess).toBe(132_880);
-    expect(result.cess).toBe(5_315);
-    expect(result.totalTax).toBe(138_195);
+    expect(result.incomeTaxBeforeCess).toBe(99_660);
+    expect(result.cess).toBe(3_986);
+    expect(result.totalTax).toBe(103_646);
   });
 
   it("does not apply professional tax deduction in new regime", () => {

@@ -562,7 +562,9 @@ function BreakdownSection({
               <Row label="Chapter VI-A" value={`− ${formatCurrency(result.chapterVIADeductions)}`} />
               <Row label="Taxable income" value={formatCurrency(result.taxableIncome)} strong />
               <p className="px-0 py-2 text-[11px] font-semibold uppercase tracking-wide text-[color:var(--muted)]">
-                Tax on taxable income (FY 2024-25 · Section 115BAC slabs, Budget 2024)
+                {result.regime === "new"
+                  ? "Tax on taxable income (Section 115BAC · Finance Act 2025 slabs, FY 2025-26 onward)"
+                  : "Tax on taxable income (default rates · old regime slabs)"}
               </p>
               <Row label="Tax at slab rates (before rebate &amp; surcharge)" value={formatCurrency(result.slabTax)} />
               <Row label="Less: Rebate u/s 87A" value={`− ${formatCurrency(result.rebate87A)}`} />
@@ -1009,7 +1011,7 @@ export default function HomePage() {
                 Income Tax Calculator
               </p>
               <p className="mt-1 max-w-xl text-sm leading-relaxed text-[color:var(--muted)]">
-                FY 2024-25 · old &amp; new regime, flexi exemptions, HRA (old regime), and take-home estimates
+                FY 2025-26 onward · old &amp; new regime, flexi exemptions, HRA (old regime), and take-home estimates
               </p>
             </div>
             <div className="flex shrink-0 flex-col items-stretch gap-3 sm:items-end">

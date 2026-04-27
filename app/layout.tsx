@@ -15,8 +15,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Salary & Income Tax Calculator (FY 2024-25) — India",
-  description: "Compare old vs new regime, flexi exemptions, and take-home for FY 2024-25.",
+  title: "Salary & Income Tax Calculator (FY 2025-26 onward) — India",
+  description: "Compare old vs new regime, flexi exemptions, and take-home using current statutory slabs.",
 };
 
 export default function RootLayout({

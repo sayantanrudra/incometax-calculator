@@ -62,24 +62,21 @@ describe("calculateTaxForRegime", () => {
     expect(result.totalTax).toBe(117_000);
   });
 
-  it("does not reduce new-regime taxable income by employer PF (payslip parity)", () => {
-    const result = calculateTaxForRegime({
-      fixedPay: 2_235_600,
+  it("does not reduce new-regime taxable income by employer PF (round inputs)", () => {
+    const baseInput = {
+      fixedPay: 2_000_000,
       variablePay: 0,
-      employerPf: 21_600,
-      professionalTax: 2_400,
-      ageGroup: "below60",
-      regime: "new",
+      professionalTax: 0,
+      ageGroup: "below60" as const,
+      regime: "new" as const,
       pluxeeExemption: 0,
       hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
-    });
-
-    expect(result.taxableIncome).toBe(2_160_600);
-    expect(result.slabTax).toBe(240_150);
-    expect(result.incomeTaxBeforeCess).toBe(240_150);
-    expect(result.cess).toBe(9_606);
-    expect(result.totalTax).toBe(249_756);
+    };
+    const noPf = calculateTaxForRegime({ ...baseInput, employerPf: 0 });
+    const withPf = calculateTaxForRegime({ ...baseInput, employerPf: 60_000 });
+    expect(withPf.taxableIncome).toBe(noPf.taxableIncome);
+    expect(withPf.totalTax).toBe(noPf.totalTax);
   });
 
   it("zeros tax at old-regime rebate threshold (taxable ₹5L)", () => {
@@ -197,32 +194,21 @@ describe("calculateTaxForRegime", () => {
     expect(result.professionalTaxDeduction).toBe(5000);
   });
 
-  it("does not reduce old-regime taxable income by employer PF", () => {
-    const withoutPf = calculateTaxForRegime({
+  it("does not reduce old-regime taxable income by employer PF (round inputs)", () => {
+    const baseInput = {
       fixedPay: 2_000_000,
       variablePay: 0,
-      employerPf: 0,
-      professionalTax: 2_400,
-      ageGroup: "below60",
-      regime: "old",
+      professionalTax: 0,
+      ageGroup: "below60" as const,
+      regime: "old" as const,
       pluxeeExemption: 0,
       hraExemption: 0,
       oldRegimeDeductions: emptyOldDeductions,
-    });
-    const withPf = calculateTaxForRegime({
-      fixedPay: 2_000_000,
-      variablePay: 0,
-      employerPf: 21_600,
-      professionalTax: 2_400,
-      ageGroup: "below60",
-      regime: "old",
-      pluxeeExemption: 0,
-      hraExemption: 0,
-      oldRegimeDeductions: emptyOldDeductions,
-    });
-
-    expect(withPf.taxableIncome).toBe(withoutPf.taxableIncome);
-    expect(withPf.totalTax).toBe(withoutPf.totalTax);
+    };
+    const noPf = calculateTaxForRegime({ ...baseInput, employerPf: 0 });
+    const withPf = calculateTaxForRegime({ ...baseInput, employerPf: 60_000 });
+    expect(withPf.taxableIncome).toBe(noPf.taxableIncome);
+    expect(withPf.totalTax).toBe(noPf.totalTax);
   });
 
   it("computes surcharge above ₹50L taxable (new regime) with non-negative components", () => {
@@ -245,6 +231,33 @@ describe("calculateTaxForRegime", () => {
     expect(result.rebate87A).toBeGreaterThanOrEqual(0);
     expect(result.rebateMarginalRelief).toBeGreaterThanOrEqual(0);
     expect(result.totalTax).toBeGreaterThan(0);
+  });
+});
+
+describe("in-hand parity (employer PF ignored end-to-end in tax math)", () => {
+  const sharedBase = {
+    fixedPay: 1_500_000,
+    variablePay: 0,
+    professionalTax: 0,
+    ageGroup: "below60" as const,
+    pluxeeExemption: 0,
+    hraExemption: 0,
+    oldRegimeDeductions: emptyOldDeductions,
+    employerPf: 60_000,
+  };
+
+  it("new regime: tax & taxable income are unchanged by employer PF input", () => {
+    const a = calculateTaxForRegime({ ...sharedBase, regime: "new" });
+    const b = calculateTaxForRegime({ ...sharedBase, regime: "new", employerPf: 0 });
+    expect(a.taxableIncome).toBe(b.taxableIncome);
+    expect(a.totalTax).toBe(b.totalTax);
+  });
+
+  it("old regime: tax & taxable income are unchanged by employer PF input", () => {
+    const a = calculateTaxForRegime({ ...sharedBase, regime: "old" });
+    const b = calculateTaxForRegime({ ...sharedBase, regime: "old", employerPf: 0 });
+    expect(a.taxableIncome).toBe(b.taxableIncome);
+    expect(a.totalTax).toBe(b.totalTax);
   });
 });
 

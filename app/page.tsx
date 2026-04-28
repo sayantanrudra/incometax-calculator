@@ -259,6 +259,13 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(val
 const getBenefitCap = (benefit: BenefitConfig, regime: TaxRegime) =>
   regime === "old" ? benefit.oldAnnualMax : benefit.newAnnualMax;
 
+/** Sum of flexi / Pluxee amounts entered for a regime (capped per benefit; used for tax and cash-out). */
+const computeBenefitsAnnual = (benefits: Record<BenefitKey, string>, regime: TaxRegime) =>
+  benefitConfigs.reduce((sum, benefit) => {
+    const cap = getBenefitCap(benefit, regime);
+    return sum + clamp(numericValue(benefits[benefit.key]), 0, cap);
+  }, 0);
+
 const deriveVariablePayAnnual = (fixedPay: number, rawInput: number, mode: VariablePayMode) => {
   if (mode === "amount") {
     return clamp(rawInput, 0, MAX_GROSS_INCOME);
@@ -508,7 +515,8 @@ function BenefitField({
 }
 
 interface PayrollAnnualBreakdown {
-  employerPf: number;
+  /** Flexi / Pluxee amounts (capped for selected regime) deducted from in-hand, not from taxable income twice. */
+  pluxeeCashOut: number;
   employeePf: number;
   professionalTax: number;
   lwfEmployee: number;
@@ -521,28 +529,22 @@ function BreakdownSection({
   showDetails,
   onToggle,
   payrollAnnual,
+  /** FY bank-salary total after tax and payroll; same basis as headline in-hand tile. */
+  annualNetAfterPayroll,
 }: {
   result: TaxComputation;
   title: string;
   showDetails: boolean;
   onToggle: () => void;
   payrollAnnual: PayrollAnnualBreakdown;
+  annualNetAfterPayroll: number;
 }) {
   const taxPercent = result.totalCtc > 0 ? (result.totalTax / result.totalCtc) * 100 : 0;
   const exemptionPercent = result.totalCtc > 0 ? (result.totalExemptions / result.totalCtc) * 100 : 0;
   const netPercent = Math.max(0, 100 - taxPercent - exemptionPercent);
 
-  /** CTC not credited as bank salary: ER PF + flexi; then payslip deductions (EE PF, PT, LWF, other). */
-  const payrollTotal =
-    payrollAnnual.employerPf +
-    result.pluxeeExemption +
-    payrollAnnual.employeePf +
-    payrollAnnual.professionalTax +
-    payrollAnnual.lwfEmployee +
-    payrollAnnual.other;
   const annualAfterTaxBeforePayroll = Math.max(0, result.totalCtc - result.totalTax);
-  const annualAfterPayroll = Math.max(0, annualAfterTaxBeforePayroll - payrollTotal);
-  const monthlyAfterPayroll = annualAfterPayroll / 12;
+  const monthlyAfterPayroll = annualNetAfterPayroll / 12;
 
   return (
     <SectionCard>
@@ -553,7 +555,7 @@ function BreakdownSection({
             {title}
           </h2>
           <p className="mt-1 text-sm text-[color:var(--muted)]">
-            Income-tax computation, then payslip deductions for estimated in-hand.
+            Income-tax computation, then payroll deductions for estimated in-hand.
           </p>
         </div>
         <button
@@ -610,27 +612,23 @@ function BreakdownSection({
           </div>
           <div>
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[color:var(--muted)]">
-              Post-tax payroll (CTC &amp; payslip, annual)
+              Post-tax payroll (annual)
             </p>
             <p className="mb-2 text-xs text-[color:var(--muted)]">
-              Employer PF and Pluxee/flexi are CTC routed to ER PF and benefits (not bank salary). We subtract them
-              after tax along with payslip lines so in-hand is cash retained from the package.
+              Pluxee / flexi and other payroll lines are not part of bank salary after tax. We subtract them here so
+              in-hand reflects cash retained from your taxable package.
             </p>
             <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60 p-[15px]">
               <Row label="Net after income tax" value={formatCurrency(annualAfterTaxBeforePayroll)} />
               <Row
-                label="Employer PF (ER share, from CTC)"
-                value={`− ${formatCurrency(payrollAnnual.employerPf)}`}
-              />
-              <Row
                 label="Pluxee / flexi (benefits, not bank salary)"
-                value={`− ${formatCurrency(result.pluxeeExemption)}`}
+                value={`− ${formatCurrency(payrollAnnual.pluxeeCashOut)}`}
               />
               <Row label="Employee PF (EPF)" value={`− ${formatCurrency(payrollAnnual.employeePf)}`} />
-              <Row label="Professional tax (payslip)" value={`− ${formatCurrency(payrollAnnual.professionalTax)}`} />
+              <Row label="Professional tax" value={`− ${formatCurrency(payrollAnnual.professionalTax)}`} />
               <Row label="LWF (employee)" value={`− ${formatCurrency(payrollAnnual.lwfEmployee)}`} />
               <Row label="Other payroll deductions" value={`− ${formatCurrency(payrollAnnual.other)}`} />
-              <Row label="Net after tax &amp; payroll (annual)" value={formatCurrency(annualAfterPayroll)} strong />
+              <Row label="Net after tax &amp; payroll (annual)" value={formatCurrency(annualNetAfterPayroll)} strong />
               <Row
                 label="Est. monthly in-hand after payroll"
                 value={formatCurrency(Math.round(monthlyAfterPayroll))}
@@ -645,8 +643,8 @@ function BreakdownSection({
           <MetricTile label="Total tax" value={formatCurrency(result.totalTax)} accent />
           <MetricTile
             label="After payroll (annual)"
-            value={formatCurrency(annualAfterPayroll)}
-            caption="After ER PF, flexi, EPF, PT, LWF, other."
+            value={formatCurrency(annualNetAfterPayroll)}
+            caption="After flexi, EPF, PT, LWF, other."
           />
         </div>
       )}
@@ -667,7 +665,7 @@ function BreakdownSection({
           <div
             className="composition-segment bg-[color:var(--chart-net)]"
             style={{ width: `${Math.min(netPercent, 100)}%` }}
-            title={`In hand: ${formatCurrency(annualAfterPayroll)}`}
+            title={`In hand: ${formatCurrency(annualNetAfterPayroll)}`}
           />
         </div>
         <div className="mt-3 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
@@ -728,7 +726,7 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
               <span>Month</span>
               <span className="text-right">Gross</span>
               <span className="text-right">Tax (TDS est.)</span>
-              <span className="text-right">Net in-hand</span>
+              <span className="text-right">Net in-hand (after payroll)</span>
             </div>
             <div className="divide-y divide-slate-100 dark:divide-slate-700/80">
               {rows.map((row) => (
@@ -745,6 +743,10 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
                 </div>
               ))}
             </div>
+            <p className="mt-3 max-w-xl text-xs leading-relaxed text-[color:var(--muted)]">
+              TDS varies by month; the twelve &quot;Net in-hand&quot; figures are adjusted so their FY total matches
+              the headline estimate (last month absorbs rounding).
+            </p>
           </div>
         </div>
       ) : (
@@ -874,18 +876,16 @@ export default function HomePage() {
   ]);
 
   const benefitExemptions = useMemo(
-    () =>
-      (["old", "new"] as TaxRegime[]).reduce<Record<TaxRegime, number>>(
-        (acc, regime) => {
-          acc[regime] = benefitConfigs.reduce((sum, benefit) => {
-            const cap = getBenefitCap(benefit, regime);
-            return sum + clamp(numericValue(state.benefits[benefit.key]), 0, cap);
-          }, 0);
-          return acc;
-        },
-        { old: 0, new: 0 },
-      ),
+    (): Record<TaxRegime, number> => ({
+      old: computeBenefitsAnnual(state.benefits, "old"),
+      new: computeBenefitsAnnual(state.benefits, "new"),
+    }),
     [state.benefits],
+  );
+
+  const rawPluxeeActiveAnnual = useMemo(
+    () => computeBenefitsAnnual(state.benefits, state.preferredRegime),
+    [state.benefits, state.preferredRegime],
   );
 
   const baseInput = {
@@ -923,21 +923,24 @@ export default function HomePage() {
 
   const payrollCashOutAnnual = useMemo(
     () =>
-      employerPf +
-      activeWithBenefits.pluxeeExemption +
+      rawPluxeeActiveAnnual +
       employeePfAnnual +
       otherPayrollAnnual +
       professionalTax +
       lwfEmployeeAnnual,
-    [
-      activeWithBenefits.pluxeeExemption,
-      employeePfAnnual,
-      employerPf,
-      lwfEmployeeAnnual,
-      otherPayrollAnnual,
-      professionalTax,
-    ],
+    [employeePfAnnual, lwfEmployeeAnnual, otherPayrollAnnual, professionalTax, rawPluxeeActiveAnnual],
   );
+
+  /** Same FY figure for headline in-hand, breakdown, and schedule reconciliation (tax engine CTC + rounded net). */
+  const annualNetAfterPayroll = useMemo(
+    () =>
+      Math.max(
+        0,
+        Math.round(activeWithBenefits.totalCtc - activeWithBenefits.totalTax - payrollCashOutAnnual),
+      ),
+    [activeWithBenefits.totalCtc, activeWithBenefits.totalTax, payrollCashOutAnnual],
+  );
+  const postPayrollMonthly = annualNetAfterPayroll / 12;
 
   const scheduleVariableMask = useMemo(() => {
     if (variablePayAnnual > 0 && variableMonthCount === 0) {
@@ -954,29 +957,29 @@ export default function HomePage() {
         variableMonthSelected: scheduleVariableMask,
         totalCtc,
         totalTaxAnnual: activeWithBenefits.totalTax,
+        annualPayrollCashOut: payrollCashOutAnnual,
+        targetAnnualNetTakeHome: annualNetAfterPayroll,
       }),
     [
       activeWithBenefits.totalTax,
+      annualNetAfterPayroll,
       fixedPay,
+      payrollCashOutAnnual,
       scheduleVariableMask,
       totalCtc,
       variablePayAnnual,
     ],
   );
 
-  const postPayrollMonthly = useMemo(() => {
-    return Math.max(0, totalCtc - activeWithBenefits.totalTax - payrollCashOutAnnual) / 12;
-  }, [activeWithBenefits.totalTax, payrollCashOutAnnual, totalCtc]);
-
   const payrollAnnualBreakdown = useMemo(
     (): PayrollAnnualBreakdown => ({
-      employerPf,
+      pluxeeCashOut: rawPluxeeActiveAnnual,
       employeePf: employeePfAnnual,
       professionalTax,
       lwfEmployee: lwfEmployeeAnnual,
       other: otherPayrollAnnual,
     }),
-    [employeePfAnnual, employerPf, lwfEmployeeAnnual, otherPayrollAnnual, professionalTax],
+    [employeePfAnnual, lwfEmployeeAnnual, otherPayrollAnnual, professionalTax, rawPluxeeActiveAnnual],
   );
 
   const flexiTaxSavedAnnual = useMemo(
@@ -1109,7 +1112,7 @@ export default function HomePage() {
                   <InputField
                     label="Fixed compensation (annual)"
                     value={state.fixedPay}
-                    helper=""
+                    helper="Annual taxable salary. Excludes employer PF."
                     error={errors.fixedPay}
                     onChange={handleSalaryChange("fixedPay")}
                   />
@@ -1210,7 +1213,7 @@ export default function HomePage() {
                       <InputField
                         label="Employer PF (annual)"
                         value={state.employerPf}
-                        helper="Non-cash CTC component for take-home; not deducted from taxable income."
+                        helper="Informational only — not added to taxable income or in-hand."
                         error={errors.employerPf}
                         onChange={handleSalaryChange("employerPf")}
                       />
@@ -1502,7 +1505,10 @@ export default function HomePage() {
                     Flexi benefits (Pluxee)
                   </h2>
                   <p className="mt-1 text-sm text-[color:var(--muted)]">
-                    Annual exempt amounts. Driver Salary exemption is company-policy dependent.
+                    Caps and tax exemption follow the regime you selected. Old regime includes office wear and books
+                    (with annual caps); new regime treats those as taxable (inputs disabled) while fuel, meal, telecom,
+                    wellness, gadgets, and driver follow the caps shown. Driver salary exemption is company-policy
+                    dependent.
                   </p>
                 </div>
                 <button
@@ -1545,6 +1551,7 @@ export default function HomePage() {
               showDetails={showBreakdown}
               onToggle={() => setShowBreakdown((s) => !s)}
               payrollAnnual={payrollAnnualBreakdown}
+              annualNetAfterPayroll={annualNetAfterPayroll}
             />
 
             <MonthlyScheduleCard rows={schedule} />

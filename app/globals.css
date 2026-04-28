@@ -357,6 +357,61 @@ html.dark .segmented-pill-thumb {
   transition: width 0.75s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/** Horizontal scroll hint on narrow viewports (e.g. monthly cashflow table). */
+.scroll-fade-x::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 28px;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(to left, var(--card), transparent);
+}
+
+@media (min-width: 640px) {
+  .scroll-fade-x::after {
+    display: none;
+  }
+}
+
+/** Tax snapshot: lower-tax regime tile (light + dark). */
+.metric-tile-winner {
+  background: linear-gradient(
+    135deg,
+    rgba(16, 185, 129, 0.18) 0%,
+    rgba(255, 255, 255, 0.92) 55%,
+    rgba(16, 185, 129, 0.12) 100%
+  );
+  border-color: rgba(16, 185, 129, 0.55);
+  box-shadow:
+    0 8px 22px rgba(16, 185, 129, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+html.dark .metric-tile-winner {
+  background: linear-gradient(
+    135deg,
+    rgba(6, 78, 59, 0.55) 0%,
+    rgba(15, 23, 42, 0.7) 55%,
+    rgba(6, 78, 59, 0.5) 100%
+  );
+  border-color: rgba(45, 212, 191, 0.55);
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/** Theme toggle pill thumb (position animated; reduced motion in global block below). */
+.theme-toggle-thumb {
+  left: 4px;
+  transition: left 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.theme-toggle-thumb[data-dark="true"] {
+  left: calc(50% - 2px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   body::before,
   .hero-wash::after {
@@ -388,6 +443,14 @@ html.dark .segmented-pill-thumb {
 
   .segmented-pill-thumb {
     transition: none;
+  }
+
+  .theme-toggle-thumb {
+    transition: none;
+  }
+
+  .scroll-fade-x::after {
+    display: none;
   }
 }
 

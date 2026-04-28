@@ -60,7 +60,6 @@ interface SalaryState {
   otherPayrollAnnual: string;
   ageGroup: AgeGroup;
   preferredRegime: TaxRegime;
-  advancedOpen: boolean;
   deductionsOpen: boolean;
   /** HRA section 10(13A) inputs collapsed by default (same pattern as Chapter VI-A). */
   hraOpen: boolean;
@@ -131,7 +130,6 @@ const defaultState: SalaryState = {
   otherPayrollAnnual: "0",
   ageGroup: "below60",
   preferredRegime: "new",
-  advancedOpen: false,
   deductionsOpen: false,
   hraOpen: false,
   flexiOpen: false,
@@ -233,6 +231,23 @@ const formatCurrency = (value: number) =>
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(Math.round(value));
+
+const displayRegimeName = (regime: string) => (regime === "old" ? "Old" : "New");
+
+const flexiSuffix = (hasFlexi: boolean) => (hasFlexi ? " (with flexi)" : "");
+
+/** Tax snapshot panel — labels kept in one place (no scattered magic strings). */
+const TAX_SNAPSHOT_LABELS = {
+  oldRegimeTax: (hasFlexi: boolean) => `Old regime tax${flexiSuffix(hasFlexi)}`,
+  newRegimeTax: (hasFlexi: boolean) => `New regime tax${flexiSuffix(hasFlexi)}`,
+  saveWithRegime: (name: string) => `You save with ${displayRegimeName(name)}`,
+  regimesEqualTitle: "Both regimes equal",
+  regimesEqualCaption: (hasFlexi: boolean) =>
+    hasFlexi ? "Same annual tax with your flexi." : "Same annual tax on these inputs.",
+  saveCaption: (other: string) => `Per year vs ${displayRegimeName(other)} regime.`,
+  flexiSavesOld: "Flexi saves in Old",
+  flexiSavesNew: "Flexi saves in New",
+};
 
 const numericValue = (value: string) => {
   const parsed = Number(value.replace(/,/g, "").trim());
@@ -420,21 +435,34 @@ function MetricTile({
   value,
   accent,
   caption,
+  winner,
 }: {
   label: string;
   value: string;
   accent?: boolean;
   caption?: string;
+  /** Highlights the lower-tax regime tile (not used when accent is true). */
+  winner?: boolean;
 }) {
+  const isWinnerTile = Boolean(winner && !accent);
+  const surfaceClasses = accent
+    ? "border-teal-300/80 bg-gradient-to-br from-teal-100/90 via-white to-violet-100/70 shadow-[0_8px_24px_rgba(13,159,122,0.12)] dark:border-teal-800/50 dark:from-teal-950/40 dark:via-slate-900/50 dark:to-violet-950/35 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)]"
+    : isWinnerTile
+      ? "metric-tile-winner border-transparent"
+      : "border-slate-300/85 bg-gradient-to-br from-slate-100/95 to-slate-50/90 hover:border-slate-400/70 dark:border-slate-600/60 dark:from-slate-900/50 dark:to-slate-900/30 dark:hover:border-slate-500/80";
+
   return (
     <div
-      className={`rounded-2xl border p-4 transition-transform duration-200 will-change-transform motion-safe:hover:-translate-y-0.5 ${
-        accent
-          ? "border-teal-300/80 bg-gradient-to-br from-teal-100/90 via-white to-violet-100/70 shadow-[0_8px_24px_rgba(13,159,122,0.12)] dark:border-teal-800/50 dark:from-teal-950/40 dark:via-slate-900/50 dark:to-violet-950/35 dark:shadow-[0_8px_24px_rgba(0,0,0,0.2)]"
-          : "border-slate-300/85 bg-gradient-to-br from-slate-100/95 to-slate-50/90 hover:border-slate-400/70 dark:border-slate-600/60 dark:from-slate-900/50 dark:to-slate-900/30 dark:hover:border-slate-500/80"
-      }`}
+      className={`rounded-2xl border p-4 transition-transform duration-200 will-change-transform motion-safe:hover:-translate-y-0.5 ${surfaceClasses}`}
     >
-      <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">{label}</p>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">{label}</p>
+        {isWinnerTile ? (
+          <span className="shrink-0 inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:border-emerald-400/40 dark:bg-emerald-400/15 dark:text-emerald-200">
+            Best
+          </span>
+        ) : null}
+      </div>
       <p className="mt-2 font-display text-xl text-[color:var(--navy)] transition-all duration-200 dark:text-[color:var(--foreground)] sm:text-2xl">
         {value}
       </p>
@@ -480,6 +508,7 @@ function BenefitField({
 }
 
 interface PayrollAnnualBreakdown {
+  employerPf: number;
   employeePf: number;
   professionalTax: number;
   lwfEmployee: number;
@@ -505,7 +534,7 @@ function BreakdownSection({
 
   /** CTC not credited as bank salary: ER PF + flexi; then payslip deductions (EE PF, PT, LWF, other). */
   const payrollTotal =
-    result.employerPfDeduction +
+    payrollAnnual.employerPf +
     result.pluxeeExemption +
     payrollAnnual.employeePf +
     payrollAnnual.professionalTax +
@@ -544,7 +573,6 @@ function BreakdownSection({
             </p>
             <div className="divide-y divide-slate-100 rounded-xl border border-slate-100/90 dark:divide-slate-700/80 dark:border-slate-700/60 p-[15px]">
               <Row label="Gross income (CTC)" value={formatCurrency(result.totalCtc)} />
-              <Row label="Employer PF (exempt component)" value={`− ${formatCurrency(result.employerPfDeduction)}`} />
               <Row
                 label="Professional tax (deduction in old regime only)"
                 value={`− ${formatCurrency(result.professionalTaxDeduction)}`}
@@ -592,7 +620,7 @@ function BreakdownSection({
               <Row label="Net after income tax" value={formatCurrency(annualAfterTaxBeforePayroll)} />
               <Row
                 label="Employer PF (ER share, from CTC)"
-                value={`− ${formatCurrency(result.employerPfDeduction)}`}
+                value={`− ${formatCurrency(payrollAnnual.employerPf)}`}
               />
               <Row
                 label="Pluxee / flexi (benefits, not bank salary)"
@@ -624,36 +652,36 @@ function BreakdownSection({
       )}
 
       <div className="mt-6">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">Composition</p>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[color:var(--muted)]">CTC breakup</p>
         <div className="flex h-3 overflow-hidden rounded-full bg-slate-100/90 ring-1 ring-slate-200/50 shadow-inner dark:bg-slate-800/90 dark:ring-slate-600/50">
           <div
             className="composition-segment bg-[color:var(--chart-tax)]"
             style={{ width: `${Math.min(taxPercent, 100)}%` }}
-            title="Tax"
+            title={`Tax: ${formatCurrency(result.totalTax)}`}
           />
           <div
             className="composition-segment bg-[color:var(--chart-exempt)]"
             style={{ width: `${Math.min(exemptionPercent, 100)}%` }}
-            title="Exemptions"
+            title={`Exemptions: ${formatCurrency(result.totalExemptions)}`}
           />
           <div
             className="composition-segment bg-[color:var(--chart-net)]"
             style={{ width: `${Math.min(netPercent, 100)}%` }}
-            title="Net"
+            title={`In hand: ${formatCurrency(annualAfterPayroll)}`}
           />
         </div>
         <div className="mt-3 flex flex-wrap gap-4 text-xs text-[color:var(--muted)]">
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-tax)] shadow-sm ring-1 ring-white/50 dark:ring-slate-700/80" />{" "}
-            Tax
+            Tax ({Math.round(taxPercent)}%)
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-exempt)] shadow-sm ring-1 ring-white/50 dark:ring-slate-700/80" />{" "}
-            Exemptions
+            Exemptions ({Math.round(exemptionPercent)}%)
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-[color:var(--chart-net)] shadow-sm ring-1 ring-white/50 dark:ring-slate-700/80" />{" "}
-            Net
+            In hand ({Math.round(netPercent)}%)
           </span>
         </div>
       </div>
@@ -683,13 +711,6 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
           <h2 className="mt-1 font-display text-2xl text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
             Cashflow view
           </h2>
-          <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[color:var(--muted)]">
-            <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-              Re-projected monthly TDS:
-            </span>{" "}
-            each month deducts (projected annual tax to date − TDS already paid) ÷ months remaining. Variable-month rows
-            include both the variable gross and any catch-up TDS after re-projection.
-          </p>
         </div>
         <button
           type="button"
@@ -701,9 +722,9 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
       </div>
 
       {open ? (
-        <div className="mt-5 overflow-x-auto rounded-xl border border-slate-100 dark:border-slate-600/70">
-          <div className="min-w-[520px]">
-            <div className="grid grid-cols-4 gap-2 border-b border-slate-200 bg-slate-50/80 px-2 py-2.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--muted)] dark:border-slate-600/70 dark:bg-slate-900/70 sm:gap-3 sm:px-3 sm:text-xs">
+        <div className="scroll-fade-x relative mt-5 overflow-x-auto rounded-xl border border-slate-100 dark:border-slate-600/70">
+          <div className="min-w-[480px]">
+            <div className="grid grid-cols-4 gap-2 border-b border-slate-200 bg-slate-50/80 px-2 py-2 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--muted)] dark:border-slate-600/70 dark:bg-slate-900/70 sm:gap-3 sm:px-3 sm:py-2.5 sm:text-xs">
               <span>Month</span>
               <span className="text-right">Gross</span>
               <span className="text-right">Tax (TDS est.)</span>
@@ -713,7 +734,7 @@ function MonthlyScheduleCard({ rows }: { rows: MonthlyRow[] }) {
               {rows.map((row) => (
                 <div
                   key={row.month}
-                  className={`grid grid-cols-4 gap-2 px-2 py-2.5 text-xs transition-colors duration-300 sm:gap-3 sm:px-3 sm:text-sm ${row.highlight ? "bg-gradient-to-r from-violet-50/80 to-teal-50/50 font-medium dark:from-violet-950/40 dark:to-teal-950/30" : ""}`}
+                  className={`grid grid-cols-4 gap-2 px-2 py-2 text-xs transition-colors duration-300 sm:gap-3 sm:px-3 sm:py-2.5 sm:text-sm ${row.highlight ? "bg-gradient-to-r from-violet-50/80 to-teal-50/50 font-medium dark:from-violet-950/40 dark:to-teal-950/30" : ""}`}
                 >
                   <span className="text-[color:var(--navy)] dark:text-[color:var(--foreground)]">{row.month}</span>
                   <span className="text-right tabular-nums text-slate-700 dark:text-slate-300">{formatCurrency(row.gross)}</span>
@@ -902,16 +923,16 @@ export default function HomePage() {
 
   const payrollCashOutAnnual = useMemo(
     () =>
-      activeWithBenefits.employerPfDeduction +
+      employerPf +
       activeWithBenefits.pluxeeExemption +
       employeePfAnnual +
       otherPayrollAnnual +
       professionalTax +
       lwfEmployeeAnnual,
     [
-      activeWithBenefits.employerPfDeduction,
       activeWithBenefits.pluxeeExemption,
       employeePfAnnual,
+      employerPf,
       lwfEmployeeAnnual,
       otherPayrollAnnual,
       professionalTax,
@@ -949,12 +970,13 @@ export default function HomePage() {
 
   const payrollAnnualBreakdown = useMemo(
     (): PayrollAnnualBreakdown => ({
+      employerPf,
       employeePf: employeePfAnnual,
       professionalTax,
       lwfEmployee: lwfEmployeeAnnual,
       other: otherPayrollAnnual,
     }),
-    [employeePfAnnual, lwfEmployeeAnnual, otherPayrollAnnual, professionalTax],
+    [employeePfAnnual, employerPf, lwfEmployeeAnnual, otherPayrollAnnual, professionalTax],
   );
 
   const flexiTaxSavedAnnual = useMemo(
@@ -972,10 +994,41 @@ export default function HomePage() {
     return { tie: false as const, savings, betterName, worseName };
   }, [comparisonWithBenefits]);
 
+  const oldRegimeTileWinner =
+    !regimeSavingsVersusOther.tie && comparisonWithBenefits.bestRegime === "old";
+  const newRegimeTileWinner =
+    !regimeSavingsVersusOther.tie && comparisonWithBenefits.bestRegime === "new";
+
   const flexiFlipsBestRegime = useMemo(
     () => comparisonWithoutBenefits.bestRegime !== comparisonWithBenefits.bestRegime,
     [comparisonWithBenefits.bestRegime, comparisonWithoutBenefits.bestRegime],
   );
+
+  const flexiSavingsOldAnnual = useMemo(
+    () =>
+      Math.max(
+        0,
+        comparisonWithoutBenefits.oldRegime.totalTax - comparisonWithBenefits.oldRegime.totalTax,
+      ),
+    [
+      comparisonWithoutBenefits.oldRegime.totalTax,
+      comparisonWithBenefits.oldRegime.totalTax,
+    ],
+  );
+
+  const flexiSavingsNewAnnual = useMemo(
+    () =>
+      Math.max(
+        0,
+        comparisonWithoutBenefits.newRegime.totalTax - comparisonWithBenefits.newRegime.totalTax,
+      ),
+    [
+      comparisonWithoutBenefits.newRegime.totalTax,
+      comparisonWithBenefits.newRegime.totalTax,
+    ],
+  );
+
+  const hasAnyFlexiExemption = benefitExemptions.old > 0 || benefitExemptions.new > 0;
 
   const handleSalaryChange = (field: SalaryField) => (event: ChangeEvent<HTMLInputElement>) => {
     setState((current) => ({ ...current, [field]: event.target.value }));
@@ -1014,10 +1067,10 @@ export default function HomePage() {
                 FY 2025-26 onward · old &amp; new regime, flexi exemptions, HRA (old regime), and take-home estimates
               </p>
             </div>
-            <div className="flex shrink-0 flex-col items-stretch gap-3 sm:items-end">
+            <div className="flex w-full shrink-0 flex-col items-stretch gap-3 sm:w-auto sm:items-end">
               <ThemeToggle />
               <div
-                className={`max-w-md rounded-2xl border px-4 py-3 text-sm leading-snug shadow-sm transition-all duration-200 ${
+                className={`w-full rounded-2xl border px-4 py-3 text-sm leading-snug shadow-sm transition-all duration-200 sm:max-w-md ${
                   regimeSavingsVersusOther.tie
                     ? "surface-info text-sky-900 dark:text-sky-200"
                     : "surface-success text-emerald-900 dark:text-emerald-100"
@@ -1145,75 +1198,60 @@ export default function HomePage() {
                     <RegimeToggle value={state.preferredRegime} onChange={(regime) => setState((c) => ({ ...c, preferredRegime: regime }))} />
                     <p className="text-xs font-medium text-[color:var(--muted)]">Age</p>
                     <AgeToggle value={state.ageGroup} onChange={(age) => setState((c) => ({ ...c, ageGroup: age }))} />
-                    <div className="flex justify-end border-t border-slate-200/80 pt-3 dark:border-slate-600/60">
-                      <button
-                        type="button"
-                        onClick={() => setState((c) => ({ ...c, advancedOpen: !c.advancedOpen }))}
-                        className="rounded-full border border-slate-200/90 bg-white/80 px-4 py-2 text-sm font-medium text-[color:var(--navy)] shadow-sm transition duration-200 hover:border-[color:var(--accent-violet)]/25 hover:bg-violet-50/40 hover:shadow-md motion-safe:active:scale-[0.98] dark:border-slate-600/80 dark:bg-slate-800/80 dark:text-[color:var(--foreground)] dark:hover:bg-violet-950/40"
-                      >
-                        {state.advancedOpen ? "Hide assumptions" : "Advanced"}
-                      </button>
-                    </div>
                   </div>
                 </div>
 
-                {state.advancedOpen ? (
-                  <div className="space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--card)] p-4 dark:border-slate-600/55 dark:bg-slate-950/50">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--muted)]">
-                        Employer PF &amp; professional tax
-                      </p>
-                      <div className="mt-3 grid gap-4 sm:grid-cols-2">
-                        <InputField
-                          label="Employer PF (annual)"
-                          value={state.employerPf}
-                          helper={``}
-                          error={errors.employerPf}
-                          onChange={handleSalaryChange("employerPf")}
-                        />
-                        <InputField
-                          label="Professional tax (annual)"
-                          value={state.professionalTax}
-                          helper=""
-                          error={errors.professionalTax}
-                          onChange={handleSalaryChange("professionalTax")}
-                        />
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 p-4 dark:border-slate-600/60 dark:bg-slate-900/45">
-                      <p className="text-sm font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                        Estimated take-home (cashflow)
-                      </p>
-                      <p className="mt-1 text-xs leading-relaxed text-[color:var(--muted)]">
-                        After income tax, we subtract employer PF, Pluxee/flexi (non-cash benefits), employee PF, PT,
-                        LWF, and other lines from CTC so monthly in-hand matches cash retained from the package.
-                      </p>
-                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                        <InputField
-                          label="Employee PF (annual)"
-                          value={state.employeePfAnnual}
-                          helper={``}
-                          error={errors.employeePfAnnual}
-                          onChange={handlePayrollChange("employeePfAnnual")}
-                        />
-                        <InputField
-                          label="LWF employee (annual)"
-                          value={state.lwfEmployeeAnnual}
-                          helper=""
-                          error={errors.lwfEmployeeAnnual}
-                          onChange={handlePayrollChange("lwfEmployeeAnnual")}
-                        />
-                        <InputField
-                          label="Other fixed annual deductions"
-                          value={state.otherPayrollAnnual}
-                          helper="Loan, union, insurance, etc. (annual total)."
-                          error={errors.otherPayrollAnnual}
-                          onChange={handlePayrollChange("otherPayrollAnnual")}
-                        />
-                      </div>
+                <div className="space-y-4 rounded-2xl border border-[color:var(--nested-panel-border)] bg-[color:var(--card)] p-4 dark:border-slate-600/55 dark:bg-slate-950/50">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--muted)]">
+                      Employer PF &amp; professional tax
+                    </p>
+                    <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                      <InputField
+                        label="Employer PF (annual)"
+                        value={state.employerPf}
+                        helper="Non-cash CTC component for take-home; not deducted from taxable income."
+                        error={errors.employerPf}
+                        onChange={handleSalaryChange("employerPf")}
+                      />
+                      <InputField
+                        label="Professional tax (annual)"
+                        value={state.professionalTax}
+                        helper=""
+                        error={errors.professionalTax}
+                        onChange={handleSalaryChange("professionalTax")}
+                      />
                     </div>
                   </div>
-                ) : null}
+                  <div className="border-t border-slate-200/80 pt-4 dark:border-slate-600/60">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[color:var(--muted)]">
+                      Employee payroll (annual)
+                    </p>
+                    <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                      <InputField
+                        label="Employee PF (annual)"
+                        value={state.employeePfAnnual}
+                        helper=""
+                        error={errors.employeePfAnnual}
+                        onChange={handlePayrollChange("employeePfAnnual")}
+                      />
+                      <InputField
+                        label="LWF employee (annual)"
+                        value={state.lwfEmployeeAnnual}
+                        helper=""
+                        error={errors.lwfEmployeeAnnual}
+                        onChange={handlePayrollChange("lwfEmployeeAnnual")}
+                      />
+                      <InputField
+                        label="Other fixed annual deductions"
+                        value={state.otherPayrollAnnual}
+                        helper="Loan, union, insurance, etc. (annual total)."
+                        error={errors.otherPayrollAnnual}
+                        onChange={handlePayrollChange("otherPayrollAnnual")}
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             </SectionCard>
 
@@ -1342,22 +1380,110 @@ export default function HomePage() {
                 Tax snapshot
               </h2>
               <p className="mt-1 text-sm text-[color:var(--muted)]">
-                Selected regime:{" "}
-                <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                  {state.preferredRegime === "old" ? "Old" : "New"}
-                </span>
-                . Annual comparison uses your flexi under each regime&apos;s rules.
+                Comparing both regimes
+                {hasAnyFlexiExemption ? " with your flexi exemptions" : ""}.
+                {!regimeSavingsVersusOther.tie ? (
+                  <>
+                    {" "}
+                    Recommended:{" "}
+                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      {displayRegimeName(comparisonWithBenefits.bestRegime)}
+                    </span>
+                    .
+                  </>
+                ) : null}
               </p>
 
               <div className="mt-5 space-y-5 rounded-2xl border border-slate-300/85 bg-gradient-to-br from-slate-100/95 to-slate-50/90 p-4 dark:border-slate-600/60 dark:from-slate-900/50 dark:to-slate-900/30 sm:p-5">
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <MetricTile
+                    label={TAX_SNAPSHOT_LABELS.oldRegimeTax(hasAnyFlexiExemption)}
+                    value={formatCurrency(comparisonWithBenefits.oldRegime.totalTax)}
+                    winner={oldRegimeTileWinner}
+                  />
+                  <MetricTile
+                    label={TAX_SNAPSHOT_LABELS.newRegimeTax(hasAnyFlexiExemption)}
+                    value={formatCurrency(comparisonWithBenefits.newRegime.totalTax)}
+                    winner={newRegimeTileWinner}
+                  />
+                  {regimeSavingsVersusOther.tie ? (
+                    <MetricTile
+                      label={TAX_SNAPSHOT_LABELS.regimesEqualTitle}
+                      value={formatCurrency(0)}
+                      caption={TAX_SNAPSHOT_LABELS.regimesEqualCaption(hasAnyFlexiExemption)}
+                    />
+                  ) : (
+                    <MetricTile
+                      label={TAX_SNAPSHOT_LABELS.saveWithRegime(regimeSavingsVersusOther.betterName)}
+                      value={formatCurrency(regimeSavingsVersusOther.savings)}
+                      caption={TAX_SNAPSHOT_LABELS.saveCaption(regimeSavingsVersusOther.worseName)}
+                      accent
+                    />
+                  )}
+                </div>
+
+                {!regimeSavingsVersusOther.tie && state.preferredRegime !== comparisonWithBenefits.bestRegime ? (
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setState((c) => ({ ...c, preferredRegime: comparisonWithBenefits.bestRegime }))
+                      }
+                      className="w-full rounded-full border border-emerald-400/55 bg-emerald-100/70 px-3 py-2 text-xs font-semibold text-emerald-900 transition hover:bg-emerald-100 sm:w-auto dark:border-emerald-500/45 dark:bg-emerald-900/40 dark:text-emerald-100 dark:hover:bg-emerald-900/55"
+                    >
+                      Switch to {displayRegimeName(comparisonWithBenefits.bestRegime)} regime
+                    </button>
+                  </div>
+                ) : null}
+
+                {hasAnyFlexiExemption ? (
+                  <div className="surface-success rounded-xl border px-3 py-3 text-sm text-emerald-900 dark:text-emerald-100">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/90 dark:text-emerald-200/90">
+                      Flexi tax saved (annual)
+                    </p>
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <p>
+                        <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {TAX_SNAPSHOT_LABELS.flexiSavesOld}
+                        </span>
+                        <span className="ml-1.5 font-display tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {formatCurrency(flexiSavingsOldAnnual)}
+                        </span>
+                      </p>
+                      <p>
+                        <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {TAX_SNAPSHOT_LABELS.flexiSavesNew}
+                        </span>
+                        <span className="ml-1.5 font-display tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                          {formatCurrency(flexiSavingsNewAnnual)}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {flexiFlipsBestRegime ? (
+                  <p className="surface-warning rounded-lg border px-2.5 py-2 text-xs text-amber-900 dark:text-amber-100">
+                    Best regime without flexi:{" "}
+                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      {comparisonWithoutBenefits.bestRegime === "old" ? "Old" : "New"}
+                    </span>
+                    . With flexi:{" "}
+                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
+                      {comparisonWithBenefits.bestRegime === "old" ? "Old" : "New"}
+                    </span>
+                    .
+                  </p>
+                ) : null}
+
+                <div className="grid gap-3 border-t border-slate-200/90 pt-4 dark:border-slate-600/50 sm:grid-cols-2">
                   <MetricTile
                     label="Est. in hand / month (after payroll)"
                     value={formatCurrency(Math.round(postPayrollMonthly))}
                     accent
                   />
                   <MetricTile
-                    label="Flexi lowers tax / year"
+                    label="Flexi lowers tax / year (selected regime)"
                     value={formatCurrency(flexiTaxSavedAnnual)}
                     caption={
                       flexiTaxSavedAnnual === 0
@@ -1366,101 +1492,7 @@ export default function HomePage() {
                     }
                   />
                 </div>
-
-                <div className="surface-info mt-1 rounded-xl border px-3 py-3 text-sm leading-relaxed text-sky-900 dark:text-sky-200">
-                  <p>
-                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                      Old
-                    </span>{" "}
-                    {formatCurrency(comparisonWithBenefits.oldRegime.totalTax)}
-                    <span className="mx-1.5 text-[color:var(--muted)]">·</span>
-                    <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                      New
-                    </span>{" "}
-                    {formatCurrency(comparisonWithBenefits.newRegime.totalTax)}
-                    {regimeSavingsVersusOther.tie ? (
-                      <span> — same annual tax with your flexi.</span>
-                    ) : (
-                      <span>
-                        {" "}
-                        — with flexi,{" "}
-                        <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                          {regimeSavingsVersusOther.betterName}
-                        </span>{" "}
-                        saves {formatCurrency(regimeSavingsVersusOther.savings)}/year vs{" "}
-                        {regimeSavingsVersusOther.worseName}.
-                      </span>
-                    )}
-                  </p>
-                  {flexiFlipsBestRegime ? (
-                    <p className="surface-warning mt-2 rounded-lg border px-2.5 py-2 text-xs text-amber-900 dark:text-amber-100">
-                      Best regime without flexi:{" "}
-                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                        {comparisonWithoutBenefits.bestRegime === "old" ? "Old" : "New"}
-                      </span>
-                      . With flexi:{" "}
-                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                        {comparisonWithBenefits.bestRegime === "old" ? "Old" : "New"}
-                      </span>
-                      .
-                    </p>
-                  ) : null}
-                </div>
-
-                <details className="border-t border-slate-200/90 pt-3 dark:border-slate-600/50">
-                  <summary className="cursor-pointer list-none text-sm font-medium text-[color:var(--navy)] outline-none marker:content-none dark:text-[color:var(--foreground)] [&::-webkit-details-marker]:hidden">
-                    Tax math with flexi
-                  </summary>
-                  <div className="mt-3 space-y-3 text-xs text-[color:var(--muted)]">
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <p>
-                        <span className="block font-medium uppercase tracking-wide text-[color:var(--muted)]">
-                          Tax before flexi (annual)
-                        </span>
-                        <span className="mt-1 block font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                          {formatCurrency(activeWithoutBenefits.totalTax)}
-                        </span>
-                        <span className="mt-0.5 block">In {state.preferredRegime === "old" ? "old" : "new"} regime.</span>
-                      </p>
-                      <p>
-                        <span className="block font-medium uppercase tracking-wide text-[color:var(--muted)]">
-                          Tax after flexi (annual)
-                        </span>
-                        <span className="mt-1 block font-display text-lg tabular-nums text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                          {formatCurrency(activeWithBenefits.totalTax)}
-                        </span>
-                      </p>
-                    </div>
-                    <p>
-                      Flexi treated as exempt (annual):{" "}
-                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                        {formatCurrency(benefitExemptions[state.preferredRegime])}
-                      </span>
-                    </p>
-                    <p>
-                      After income tax only (monthly):{" "}
-                      <span className="font-medium text-[color:var(--navy)] dark:text-[color:var(--foreground)]">
-                        {formatCurrency(activeWithBenefits.monthlyNetInHand)}
-                      </span>
-                      <span className="text-[color:var(--muted)]"> — before PF, PT, LWF, flexi payroll.</span>
-                    </p>
-                  </div>
-                </details>
               </div>
-
-              <details className="surface-info mt-4 rounded-xl border px-3 py-2.5 text-xs text-sky-900 dark:text-sky-200">
-                <summary className="cursor-pointer list-none font-semibold uppercase tracking-wide marker:content-none [&::-webkit-details-marker]:hidden">
-                  Assumptions
-                </summary>
-                <div className="mt-2 space-y-1.5 leading-relaxed">
-                  <p>HRA salary basis uses 50% of annual fixed compensation as a proxy.</p>
-                  <p>Driver Salary exemption is company-policy dependent and assumed eligible when entered.</p>
-                  <p>Variable payout months can trigger TDS catch-up in following months.</p>
-                </div>
-              </details>
-              <p className="mt-4 text-xs text-[color:var(--muted)]">
-                Taxable income, exemptions, and effective rate: see breakdown below.
-              </p>
             </SectionCard>
 
             <SectionCard>

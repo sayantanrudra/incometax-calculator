@@ -21,7 +21,7 @@ India **FY 2024-25** salary tax **estimator** — old vs new regime, Chapter VI-
 | | | |
 | --- | --- | --- |
 | ⚖️ | **Regimes** | Old / new toggle, side-by-side numbers, “best regime” with and without flexi |
-| 💵 | **Income** | Fixed + variable pay; optional employer PF & professional tax (PT in old regime in the engine) |
+| 💵 | **Income** | Fixed + variable pay; optional employer PF (cashflow/CTC component) & professional tax (PT deduction in old regime only) |
 | 🎂 | **Age** | Old-regime slabs: &lt;60, 60–80, 80+ |
 | 🏠 | **HRA** | Section 10(13A) style exemption (old regime); metro vs non-metro — `utils/hraExemption.ts` |
 | 📑 | **Chapter VI-A** | 80C, 80CCD(1B), 80D, 80DD, 80E, 80EEB, 80G, 80GGA, 80U, 80TTA/80TTB (age-gated in UI) |

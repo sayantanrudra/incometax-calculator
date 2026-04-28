@@ -62,6 +62,26 @@ describe("calculateTaxForRegime", () => {
     expect(result.totalTax).toBe(117_000);
   });
 
+  it("does not reduce new-regime taxable income by employer PF (payslip parity)", () => {
+    const result = calculateTaxForRegime({
+      fixedPay: 2_235_600,
+      variablePay: 0,
+      employerPf: 21_600,
+      professionalTax: 2_400,
+      ageGroup: "below60",
+      regime: "new",
+      pluxeeExemption: 0,
+      hraExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+    });
+
+    expect(result.taxableIncome).toBe(2_160_600);
+    expect(result.slabTax).toBe(240_150);
+    expect(result.incomeTaxBeforeCess).toBe(240_150);
+    expect(result.cess).toBe(9_606);
+    expect(result.totalTax).toBe(249_756);
+  });
+
   it("zeros tax at old-regime rebate threshold (taxable ₹5L)", () => {
     const totalCtc = 550_000;
     const result = calculateTaxForRegime({
@@ -175,6 +195,34 @@ describe("calculateTaxForRegime", () => {
     });
 
     expect(result.professionalTaxDeduction).toBe(5000);
+  });
+
+  it("does not reduce old-regime taxable income by employer PF", () => {
+    const withoutPf = calculateTaxForRegime({
+      fixedPay: 2_000_000,
+      variablePay: 0,
+      employerPf: 0,
+      professionalTax: 2_400,
+      ageGroup: "below60",
+      regime: "old",
+      pluxeeExemption: 0,
+      hraExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+    });
+    const withPf = calculateTaxForRegime({
+      fixedPay: 2_000_000,
+      variablePay: 0,
+      employerPf: 21_600,
+      professionalTax: 2_400,
+      ageGroup: "below60",
+      regime: "old",
+      pluxeeExemption: 0,
+      hraExemption: 0,
+      oldRegimeDeductions: emptyOldDeductions,
+    });
+
+    expect(withPf.taxableIncome).toBe(withoutPf.taxableIncome);
+    expect(withPf.totalTax).toBe(withoutPf.totalTax);
   });
 
   it("computes surcharge above ₹50L taxable (new regime) with non-negative components", () => {

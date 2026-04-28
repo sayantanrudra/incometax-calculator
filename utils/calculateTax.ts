@@ -53,7 +53,8 @@ export interface TaxComputation {
   regime: TaxRegime;
   totalCtc: number;
   standardDeduction: number;
-  employerPfDeduction: number;
+  /** Employer PF component inside CTC (non-cash); not an income-tax deduction. */
+  employerPfCtcComponent: number;
   professionalTaxDeduction: number;
   pluxeeExemption: number;
   hraExemption: number;
@@ -336,7 +337,7 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
   const fixedPay = clamp(input.fixedPay, 0, MAX_GROSS_INCOME);
   const variablePay = clamp(input.variablePay, 0, MAX_GROSS_INCOME);
   const totalCtc = fixedPay + variablePay;
-  const employerPfDeduction = clamp(input.employerPf, 0, MAX_EMPLOYER_PF);
+  const employerPfCtcComponent = clamp(input.employerPf, 0, MAX_EMPLOYER_PF);
   const professionalTaxDeduction =
     input.regime === "old" ? clamp(input.professionalTax, 0, MAX_PROFESSIONAL_TAX) : 0;
   const standardDeduction = Math.min(getStandardDeduction(input.regime), totalCtc);
@@ -350,7 +351,6 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     input.regime === "old" ? clamp(input.hraExemption ?? 0, 0, totalCtc) : 0;
   const totalExemptions =
     standardDeduction +
-    employerPfDeduction +
     professionalTaxDeduction +
     chapterVIADeductions +
     pluxeeExemption +
@@ -367,7 +367,7 @@ export const calculateTaxForRegime = (input: TaxCalculationInput): TaxComputatio
     regime: input.regime,
     totalCtc: roundCurrency(totalCtc),
     standardDeduction: roundCurrency(standardDeduction),
-    employerPfDeduction: roundCurrency(employerPfDeduction),
+    employerPfCtcComponent: roundCurrency(employerPfCtcComponent),
     professionalTaxDeduction: roundCurrency(professionalTaxDeduction),
     pluxeeExemption: roundCurrency(pluxeeExemption),
     hraExemption: roundCurrency(hraExemption),
